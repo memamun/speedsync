@@ -28,20 +28,44 @@ class DataUsageRepository(context: Context) {
     private var cachedWifi: Long = 0L
     private var cachedMobile: Long = 0L
     private var lastFlushTime: Long = 0L
+    private var nextMidnightEpochMs: Long = 0L
 
     init {
         // Initialize cache on startup
         synchronized(lock) {
-            val today = getDateFormat().format(Date())
+            val now = System.currentTimeMillis()
+            val today = getDateFormat().format(Date(now))
             cachedToday = today
+            nextMidnightEpochMs = calculateNextMidnightEpochMs(now)
             cachedWifi = prefs.getLong("${KEY_WIFI_PREFIX}_$today", 0L)
             cachedMobile = prefs.getLong("${KEY_MOBILE_PREFIX}_$today", 0L)
-            lastFlushTime = System.currentTimeMillis()
+            lastFlushTime = now
             pruneHistoryIfNeeded()
         }
     }
 
-    private fun getTodayDate(): String = getDateFormat().format(Date())
+    private fun calculateNextMidnightEpochMs(now: Long): Long {
+        val calendar = java.util.Calendar.getInstance()
+        calendar.timeInMillis = now
+        calendar.set(java.util.Calendar.HOUR_OF_DAY, 0)
+        calendar.set(java.util.Calendar.MINUTE, 0)
+        calendar.set(java.util.Calendar.SECOND, 0)
+        calendar.set(java.util.Calendar.MILLISECOND, 0)
+        calendar.add(java.util.Calendar.DAY_OF_YEAR, 1)
+        return calendar.timeInMillis
+    }
+
+    private fun getTodayDate(now: Long = System.currentTimeMillis()): String {
+        synchronized(lock) {
+            if (cachedToday.isNotEmpty() && now < nextMidnightEpochMs) {
+                return cachedToday
+            }
+            val formatted = getDateFormat().format(Date(now))
+            cachedToday = formatted
+            nextMidnightEpochMs = calculateNextMidnightEpochMs(now)
+            return formatted
+        }
+    }
 
     fun isServiceEnabled(): Boolean = prefs.getBoolean(KEY_SERVICE_ENABLED, true)
 
@@ -89,10 +113,10 @@ class DataUsageRepository(context: Context) {
         if (wifiDelta <= 0L && mobileDelta <= 0L) return
 
         val now = System.currentTimeMillis()
-        val today = getTodayDate()
         var shouldFlush = false
 
         synchronized(lock) {
+            val today = getTodayDate(now)
             if (cachedToday != today) {
                 // Day rollover! Flush previous day data first
                 flushInternal(now)
@@ -175,18 +199,18 @@ class DataUsageRepository(context: Context) {
      * Retrieves today's Wi-Fi, Mobile, and Total usage instantly from the in-memory cache.
      */
     fun getTodayUsage(): Triple<Long, Long, Long> {
-        val today = getTodayDate()
+        val now = System.currentTimeMillis()
         synchronized(lock) {
-            if (cachedToday == today) {
+            if (cachedToday.isNotEmpty() && now < nextMidnightEpochMs) {
                 return Triple(cachedWifi, cachedMobile, cachedWifi + cachedMobile)
-            } else {
-                val wifi = prefs.getLong("${KEY_WIFI_PREFIX}_$today", 0L)
-                val mobile = prefs.getLong("${KEY_MOBILE_PREFIX}_$today", 0L)
-                cachedToday = today
-                cachedWifi = wifi
-                cachedMobile = mobile
-                return Triple(wifi, mobile, wifi + mobile)
             }
+            val today = getTodayDate(now)
+            val wifi = prefs.getLong("${KEY_WIFI_PREFIX}_$today", 0L)
+            val mobile = prefs.getLong("${KEY_MOBILE_PREFIX}_$today", 0L)
+            cachedToday = today
+            cachedWifi = wifi
+            cachedMobile = mobile
+            return Triple(wifi, mobile, wifi + mobile)
         }
     }
 

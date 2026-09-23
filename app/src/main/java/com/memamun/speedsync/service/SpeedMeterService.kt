@@ -66,23 +66,25 @@ class SpeedMeterService : Service() {
     private var lastNotifiedNetworkName: String = ""
     private var lastNotificationTime: Long = 0L
 
-    private var wakeLock: PowerManager.WakeLock? = null
     private var isScreenOn: Boolean = true
+    private lateinit var cachedPendingAppIntent: PendingIntent
 
     private val screenReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             when (intent?.action) {
                 Intent.ACTION_SCREEN_OFF -> {
                     isScreenOn = false
-                    try {
-                        if (wakeLock?.isHeld == true) {
-                            wakeLock?.release()
-                        }
-                    } catch (_: Exception) {}
-                    dataRepo.flush()
+                    // Process final delta before entering deep sleep, flush data, and stop loop
+                    serviceScope.launch {
+                        performSpeedUpdate(forceNotify = false)
+                        dataRepo.flush()
+                        updateJob?.cancel()
+                    }
                 }
                 Intent.ACTION_SCREEN_ON -> {
                     isScreenOn = true
+                    // Resume active 1-second monitoring loop and credit sleep traffic
+                    startMonitoring()
                     serviceScope.launch {
                         performSpeedUpdate(forceNotify = true)
                     }
@@ -100,11 +102,16 @@ class SpeedMeterService : Service() {
 
         val pm = getSystemService(Context.POWER_SERVICE) as? PowerManager
         isScreenOn = pm?.isInteractive ?: true
-        try {
-            wakeLock = pm?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "SpeedSync::LiveMonitoring")?.apply {
-                setReferenceCounted(false)
-            }
-        } catch (_: Exception) {}
+
+        val appIntent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        cachedPendingAppIntent = PendingIntent.getActivity(
+            this,
+            0,
+            appIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
 
         val filter = IntentFilter().apply {
             addAction(Intent.ACTION_SCREEN_ON)
@@ -159,15 +166,11 @@ class SpeedMeterService : Service() {
         lastMobileTxBytes = TrafficStats.getMobileTxBytes()
         lastTimestamp = System.currentTimeMillis()
 
+        if (!isScreenOn) return
+
         updateJob = serviceScope.launch {
             while (isActive) {
-                if (isScreenOn) {
-                    delay(1000)
-                } else {
-                    // While screen is off, status bar is not visible.
-                    // Throttle updates to 8 seconds without wake lock to preserve battery.
-                    delay(8000)
-                }
+                delay(1000)
                 performSpeedUpdate()
             }
         }
@@ -327,16 +330,6 @@ class SpeedMeterService : Service() {
         // Exact pre-rendered drawable icon matching Internet Speed Meter Lite (fallback to dynamic)
         val statusIconCompat = getExactSpeedIcon(totalActiveBytes) ?: getDynamicSpeedIcon(statusSpeed.value, statusSpeed.unit)
 
-        val appIntent = Intent(this, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-        }
-        val pendingAppIntent = PendingIntent.getActivity(
-            this,
-            0,
-            appIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-
         val title = "↓ $downSpeedStr $downUnit   ↑ $upSpeedStr $upUnit"
         val content = "$networkName  •  Today: $todayTotal"
         val bigText = "Network: $networkName\nDownload: $downSpeedStr $downUnit   Upload: $upSpeedStr $upUnit\nToday: $todayTotal  (Wi-Fi: $todayWifi  •  Mobile: $todayMobile)"
@@ -346,7 +339,7 @@ class SpeedMeterService : Service() {
             .setContentText(content)
             .setSubText(networkName)
             .setStyle(NotificationCompat.BigTextStyle().bigText(bigText))
-            .setContentIntent(pendingAppIntent)
+            .setContentIntent(cachedPendingAppIntent)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setShowWhen(false)
@@ -432,6 +425,9 @@ class SpeedMeterService : Service() {
         return id
     }
 
+    private var lastExactResId: Int = 0
+    private var cachedExactIconCompat: IconCompat? = null
+
     /**
      * Resolves the exact pre-rendered drawable icon from Internet Speed Meter Lite
      * (wkb000-wkb999 for KB/s, wmb010-wmb291 for MB/s).
@@ -442,25 +438,29 @@ class SpeedMeterService : Service() {
         val mb = bytes / (1024.0 * 1024.0)
 
         return try {
-            if (mb >= 1.0) {
+            val resId = if (mb >= 1.0) {
                 val tenths = (mb * 10.0).toInt()
                 if (tenths in 10..291) {
                     val resName = String.format(Locale.US, "wmb%03d", tenths)
-                    val resId = getDrawableResId(resName)
-                    if (resId != 0) {
-                        return IconCompat.createWithResource(this, resId)
-                    }
-                }
+                    getDrawableResId(resName)
+                } else 0
             } else {
                 val kbClamped = kb.toInt().coerceIn(0, 999)
                 val resName = String.format(Locale.US, "wkb%03d", kbClamped)
-                val resId = getDrawableResId(resName)
-                if (resId != 0) {
-                    return IconCompat.createWithResource(this, resId)
-                }
+                getDrawableResId(resName)
             }
-            null
-        } catch (e: Exception) {
+
+            if (resId != 0) {
+                if (resId == lastExactResId && cachedExactIconCompat != null) {
+                    cachedExactIconCompat
+                } else {
+                    val icon = IconCompat.createWithResource(this, resId)
+                    cachedExactIconCompat = icon
+                    lastExactResId = resId
+                    icon
+                }
+            } else null
+        } catch (_: Exception) {
             null
         }
     }
@@ -582,11 +582,6 @@ class SpeedMeterService : Service() {
         super.onDestroy()
         try {
             unregisterReceiver(screenReceiver)
-        } catch (_: Exception) {}
-        try {
-            if (wakeLock?.isHeld == true) {
-                wakeLock?.release()
-            }
         } catch (_: Exception) {}
         try {
             dataRepo.flush()
