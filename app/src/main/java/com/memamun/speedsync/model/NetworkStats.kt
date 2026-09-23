@@ -10,7 +10,11 @@ data class LiveSpeedData(
     val isConnected: Boolean = true,
     val todayWifiBytes: Long = 0L,
     val todayMobileBytes: Long = 0L,
-    val todayTotalBytes: Long = 0L
+    val todayTotalBytes: Long = 0L,
+    val localIp: String = "Unavailable",
+    val linkSpeedMbps: Int = 0,
+    val downstreamBandwidthKbps: Int = 0,
+    val upstreamBandwidthKbps: Int = 0
 )
 
 data class DayUsageItem(
@@ -37,7 +41,8 @@ enum class SpeedTestPhase {
     PING,
     DOWNLOAD,
     UPLOAD,
-    COMPLETED
+    COMPLETED,
+    ERROR
 }
 
 data class SpeedTestResult(
@@ -49,5 +54,6 @@ data class SpeedTestResult(
     val pingMs: Long = 0L,
     val jitterMs: Long = 0L,
     val packetLossPercent: Double = 0.0,
-    val testFinished: Boolean = false
+    val testFinished: Boolean = false,
+    val errorMessage: String? = null
 )

@@ -15,6 +15,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.Crossfade
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
@@ -59,6 +60,7 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -186,7 +188,7 @@ fun SpeedMeterApp(viewModel: SpeedMeterViewModel) {
             permissionsLauncher.launch(permissionsToRequest.toTypedArray())
         }
 
-        val repo = DataUsageRepository(context)
+        val repo = DataUsageRepository.getInstance(context)
         if (repo.isServiceEnabled() && hasNotificationPermission) {
             SpeedMeterService.start(context)
         }
@@ -229,29 +231,38 @@ fun SpeedMeterApp(viewModel: SpeedMeterViewModel) {
                     .fillMaxWidth()
                     .weight(1f)
             ) {
-                when (selectedTab) {
-                    0 -> {
-                        SpeedMainScreen(
-                            isTesting = isTesting,
-                            speedTestResult = speedTestResult,
-                            liveSpeed = liveSpeed,
-                            speedUnit = speedUnit,
-                            onRunSpeedTest = {
-                                viewModel.startSpeedTest()
-                            },
-                            onCancelSpeedTest = {
-                                viewModel.cancelSpeedTest()
-                            }
-                        )
-                    }
-                    1 -> {
-                        HistoryView(historyList = historyList)
-                    }
-                    2 -> {
-                        NetworkInfoScreen(
-                            liveSpeed = liveSpeed,
-                            isServiceRunning = isServiceRunning
-                        )
+                Crossfade(
+                    targetState = selectedTab,
+                    animationSpec = tween(durationMillis = 200),
+                    label = "tab_crossfade"
+                ) { tab ->
+                    when (tab) {
+                        0 -> {
+                            SpeedMainScreen(
+                                isTesting = isTesting,
+                                speedTestResult = speedTestResult,
+                                liveSpeed = liveSpeed,
+                                speedUnit = speedUnit,
+                                onRunSpeedTest = {
+                                    viewModel.startSpeedTest()
+                                },
+                                onCancelSpeedTest = {
+                                    viewModel.cancelSpeedTest()
+                                }
+                            )
+                        }
+                        1 -> {
+                            HistoryView(
+                                historyList = historyList,
+                                onClearHistory = { viewModel.clearHistory() }
+                            )
+                        }
+                        2 -> {
+                            NetworkInfoScreen(
+                                liveSpeed = liveSpeed,
+                                isServiceRunning = isServiceRunning
+                            )
+                        }
                     }
                 }
             }
@@ -378,7 +389,9 @@ fun SpeedMainScreen(
 ) {
     // Gauge speed calculation
     val (displaySpeed, displayUnit, progress) = remember(isTesting, speedTestResult, liveSpeed, speedUnit) {
-        if (isTesting || speedTestResult.testFinished) {
+        if (speedTestResult.phase == SpeedTestPhase.ERROR) {
+            Triple("—", "Test Failed", 0.05f)
+        } else if (isTesting || speedTestResult.testFinished) {
             val speed = speedTestResult.currentSpeedMbps
             val formatted = String.format(Locale.US, "%.1f", speed)
             val unit = when (speedTestResult.phase) {
@@ -407,9 +420,9 @@ fun SpeedMainScreen(
         }
     }
 
-    val pingStr = if (speedTestResult.pingMs > 0) speedTestResult.pingMs.toString() else "18"
-    val jitterStr = if (speedTestResult.jitterMs > 0) speedTestResult.jitterMs.toString() else "4"
-    val lossStr = String.format(Locale.US, "%.1f", speedTestResult.packetLossPercent)
+    val pingStr = if (speedTestResult.pingMs > 0) speedTestResult.pingMs.toString() else "—"
+    val jitterStr = if (speedTestResult.jitterMs > 0) speedTestResult.jitterMs.toString() else "—"
+    val lossStr = if (speedTestResult.testFinished || isTesting) String.format(Locale.US, "%.1f", speedTestResult.packetLossPercent) else "—"
 
     Column(
         modifier = Modifier
@@ -424,6 +437,34 @@ fun SpeedMainScreen(
             speedUnitLabel = displayUnit,
             progressFraction = progress
         )
+
+        // Error message banner if test encountered an issue
+        if (speedTestResult.phase == SpeedTestPhase.ERROR && !speedTestResult.errorMessage.isNullOrEmpty()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.85f), RoundedCornerShape(14.dp))
+                    .padding(horizontal = 14.dp, vertical = 10.dp)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Warning,
+                        contentDescription = "Error",
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Text(
+                        text = speedTestResult.errorMessage,
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+            }
+        }
 
         // 2x2 Metric Cards Grid
         MetricCardsGrid(
@@ -471,8 +512,13 @@ fun SpeedMainScreen(
                         contentDescription = null,
                         modifier = Modifier.size(20.dp)
                     )
+                    val btnLabel = when {
+                        speedTestResult.phase == SpeedTestPhase.ERROR -> "RETRY SPEED TEST"
+                        speedTestResult.testFinished -> "TEST AGAIN"
+                        else -> "START SPEED TEST"
+                    }
                     Text(
-                        text = if (speedTestResult.testFinished) "TEST AGAIN" else "START SPEED TEST",
+                        text = btnLabel,
                         fontWeight = FontWeight.Bold,
                         fontSize = 15.sp,
                         letterSpacing = 0.8.sp
@@ -519,6 +565,14 @@ fun NetworkInfoScreen(
                 InfoRow(label = "Network Status", value = if (liveSpeed.isConnected) "Online" else "Offline", isHighlight = true)
                 InfoRow(label = "Interface Type", value = if (liveSpeed.isWifi) "Wi-Fi (High Speed)" else if (liveSpeed.isMobile) "Cellular 5G/LTE" else "Local Adapter")
                 InfoRow(label = "Access Point / Carrier", value = liveSpeed.networkName)
+                InfoRow(label = "Local IP Address", value = liveSpeed.localIp)
+                if (liveSpeed.isWifi && liveSpeed.linkSpeedMbps > 0) {
+                    InfoRow(label = "Wi-Fi Link Speed", value = "${liveSpeed.linkSpeedMbps} Mbps")
+                }
+                if (liveSpeed.downstreamBandwidthKbps > 0) {
+                    val downMbps = liveSpeed.downstreamBandwidthKbps / 1000.0
+                    InfoRow(label = "Estimated Downlink", value = String.format(Locale.US, "%.1f Mbps", downMbps))
+                }
                 InfoRow(label = "Status Bar Live Service", value = if (isServiceRunning) "Running in Foreground" else "Stopped")
                 InfoRow(label = "Today's Total Traffic", value = DataUsageRepository.formatBytes(liveSpeed.todayTotalBytes))
                 InfoRow(label = "Wi-Fi Traffic Today", value = DataUsageRepository.formatBytes(liveSpeed.todayWifiBytes))

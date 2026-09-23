@@ -1,21 +1,36 @@
-# Add project specific ProGuard rules here.
-# You can control the set of applied configuration files using the
-# proguardFiles setting in build.gradle.
-#
-# For more details, see
-#   http://developer.android.com/guide/developing/tools/proguard.html
+# SpeedSync ProGuard / R8 Rules
 
-# If your project uses WebView with JS, uncomment the following
-# and specify the fully qualified class name to the JavaScript interface
-# class:
-#-keepclassmembers class fqcn.of.javascript.interface.for.webview {
-#   public *;
-#}
+# Preserve line numbers and source file attributes for crash stack traces
+-keepattributes *Annotation*,Signature,InnerClasses,EnclosingMethod,SourceFile,LineNumberTable
+-renamesourcefileattribute SourceFile
 
-# Uncomment this to preserve the line number information for
-# debugging stack traces.
-#-keepattributes SourceFile,LineNumberTable
+# App entry points and components
+-keep class com.memamun.speedsync.MainActivity { *; }
+-keep class com.memamun.speedsync.service.SpeedMeterService { *; }
+-keep class com.memamun.speedsync.service.BootReceiver { *; }
 
-# If you keep the line number information, uncomment this to
-# hide the original source file name.
-#-renamesourcefileattribute SourceFile
+# Data models and enums
+-keep class com.memamun.speedsync.model.** { *; }
+-keepclassmembers enum com.memamun.speedsync.model.** { *; }
+
+# Data usage repository and helper
+-keep class com.memamun.speedsync.data.DataUsageRepository { *; }
+-keep class com.memamun.speedsync.network.NetworkHelper** { *; }
+-keep class com.memamun.speedsync.network.SpeedTestEngine { *; }
+
+# OkHttp
+-dontwarn okhttp3.**
+-dontwarn okio.**
+-dontwarn javax.annotation.**
+-dontwarn org.conscrypt.**
+-keepnames class okhttp3.internal.publicsuffix.PublicSuffixDatabase
+
+# Kotlin Coroutines
+-keepclassmembers class kotlinx.coroutines.** {
+    volatile <fields>;
+}
+-dontwarn kotlinx.coroutines.**
+
+# Jetpack Compose
+-keep class androidx.compose.material.icons.** { *; }
+-dontwarn androidx.compose.**

@@ -20,8 +20,28 @@ class NetworkHelper(private val context: Context) {
         val isConnected: Boolean,
         val isWifi: Boolean,
         val isMobile: Boolean,
-        val networkName: String
+        val networkName: String,
+        val localIp: String = "Unavailable",
+        val linkSpeedMbps: Int = 0,
+        val downstreamKbps: Int = 0,
+        val upstreamKbps: Int = 0
     )
+
+    fun getLocalIpAddress(): String {
+        try {
+            val interfaces = java.net.NetworkInterface.getNetworkInterfaces() ?: return "Unavailable"
+            for (intf in interfaces) {
+                if (intf.isLoopback || !intf.isUp) continue
+                val addrs = intf.inetAddresses ?: continue
+                for (addr in addrs) {
+                    if (!addr.isLoopbackAddress && addr is java.net.Inet4Address) {
+                        return addr.hostAddress ?: "Unavailable"
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+        return "Unavailable"
+    }
 
     fun getConnectionInfo(): ConnectionInfo {
         val cm = connectivityManager ?: return ConnectionInfo(false, false, false, "No Network")
@@ -80,11 +100,27 @@ class NetworkHelper(private val context: Context) {
             else -> "Connected"
         }
 
+        val linkSpeed = if (isWifi) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                (capabilities.transportInfo as? WifiInfo)?.linkSpeed ?: 0
+            } else {
+                try {
+                    @Suppress("DEPRECATION")
+                    val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+                    wifiManager?.connectionInfo?.linkSpeed ?: 0
+                } catch (_: Exception) { 0 }
+            }
+        } else 0
+
         return ConnectionInfo(
             isConnected = true,
             isWifi = isWifi,
             isMobile = isMobile,
-            networkName = name
+            networkName = name,
+            localIp = getLocalIpAddress(),
+            linkSpeedMbps = if (linkSpeed > 0) linkSpeed else 0,
+            downstreamKbps = capabilities.linkDownstreamBandwidthKbps,
+            upstreamKbps = capabilities.linkUpstreamBandwidthKbps
         )
     }
 }

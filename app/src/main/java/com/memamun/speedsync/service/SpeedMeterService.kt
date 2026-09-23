@@ -93,7 +93,7 @@ class SpeedMeterService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        dataRepo = DataUsageRepository(this)
+        dataRepo = DataUsageRepository.getInstance(this)
         networkHelper = NetworkHelper(this)
         notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         createNotificationChannel()
@@ -202,8 +202,8 @@ class SpeedMeterService : Service() {
         val wifiDelta: Long
         val mobileDelta: Long
         if (connInfo.isWifi) {
-            wifiDelta = totalDelta.coerceAtLeast(0L)
-            mobileDelta = 0L
+            wifiDelta = (totalDelta - totalMobileDelta).coerceAtLeast(0L)
+            mobileDelta = totalMobileDelta.coerceAtLeast(0L)
         } else if (connInfo.isMobile) {
             wifiDelta = 0L
             mobileDelta = totalMobileDelta.coerceAtLeast(0L)
@@ -237,7 +237,11 @@ class SpeedMeterService : Service() {
             isConnected = connInfo.isConnected,
             todayWifiBytes = todayWifi,
             todayMobileBytes = todayMobile,
-            todayTotalBytes = todayTotal
+            todayTotalBytes = todayTotal,
+            localIp = connInfo.localIp,
+            linkSpeedMbps = connInfo.linkSpeedMbps,
+            downstreamBandwidthKbps = connInfo.downstreamKbps,
+            upstreamBandwidthKbps = connInfo.upstreamKbps
         )
 
         _liveSpeedData.value = speedData

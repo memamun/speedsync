@@ -26,7 +26,7 @@ import kotlinx.coroutines.launch
 
 class SpeedMeterViewModel(application: Application) : AndroidViewModel(application) {
 
-    private val repository = DataUsageRepository(application)
+    private val repository = DataUsageRepository.getInstance(application)
     private val speedTestEngine = SpeedTestEngine()
 
     val liveSpeed: StateFlow<LiveSpeedData> = SpeedMeterService.liveSpeedData
@@ -81,6 +81,11 @@ class SpeedMeterViewModel(application: Application) : AndroidViewModel(applicati
 
     fun refreshHistory() {
         _historyList.value = repository.getUsageHistory()
+    }
+
+    fun clearHistory() {
+        repository.clearHistory()
+        refreshHistory()
     }
 
     fun toggleService() {

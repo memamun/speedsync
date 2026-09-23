@@ -19,11 +19,18 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.DataUsage
 import androidx.compose.material.icons.filled.Wifi
+import androidx.compose.foundation.clickable
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -36,8 +43,50 @@ import com.memamun.speedsync.model.DayUsageItem
 @Composable
 fun HistoryView(
     historyList: List<DayUsageItem>,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onClearHistory: () -> Unit = {}
 ) {
+    var showClearDialog by remember { mutableStateOf(false) }
+
+    if (showClearDialog) {
+        AlertDialog(
+            onDismissRequest = { showClearDialog = false },
+            title = {
+                Text(
+                    text = "Clear Usage History?",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 18.sp
+                )
+            },
+            text = {
+                Text(
+                    text = "This will permanently delete all recorded Wi-Fi and mobile data history. This action cannot be undone.",
+                    fontSize = 14.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showClearDialog = false
+                        onClearHistory()
+                    }
+                ) {
+                    Text(
+                        text = "Clear History",
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
     val totalHistoryBytes = historyList.sumOf { it.totalBytes }
     val totalWifiBytes = historyList.sumOf { it.wifiBytes }
     val totalMobileBytes = historyList.sumOf { it.mobileBytes }
@@ -60,13 +109,30 @@ fun HistoryView(
                 .padding(20.dp)
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text(
-                    text = "DATA USAGE SUMMARY",
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Medium,
-                    letterSpacing = 1.5.sp,
-                    color = MaterialTheme.colorScheme.primary
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "DATA USAGE SUMMARY",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Medium,
+                        letterSpacing = 1.5.sp,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    if (historyList.isNotEmpty()) {
+                        Text(
+                            text = "Clear History",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier
+                                .clickable { showClearDialog = true }
+                                .padding(horizontal = 4.dp, vertical = 2.dp)
+                        )
+                    }
+                }
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),

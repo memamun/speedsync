@@ -79,11 +79,17 @@ fun MetricCardsGrid(
                 unit = "ms",
                 modifier = Modifier.weight(1f)
             )
+            val lossDouble = lossPercent.toDoubleOrNull()
+            val lossColor = when {
+                lossDouble == null || lossDouble == 0.0 -> MaterialTheme.colorScheme.onSurface
+                lossDouble < 5.0 -> Color(0xFFF59E0B) // Amber warning
+                else -> MaterialTheme.statusRed
+            }
             MetricCard(
                 label = "LOSS",
                 value = lossPercent,
                 unit = "%",
-                valueColor = MaterialTheme.statusRed,
+                valueColor = lossColor,
                 modifier = Modifier.weight(1f)
             )
         }
@@ -140,92 +146,6 @@ fun MetricCard(
                     modifier = Modifier.padding(bottom = 2.dp)
                 )
             }
-        }
-    }
-}
-
-@Composable
-fun StatusBarMeterControlBanner(
-    isServiceRunning: Boolean,
-    onToggle: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Box(
-        modifier = modifier
-            .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(20.dp))
-            .border(
-                BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)),
-                RoundedCornerShape(20.dp)
-            )
-            .padding(horizontal = 14.dp, vertical = 10.dp)
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                modifier = Modifier.weight(1f)
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(34.dp)
-                        .background(
-                            if (isServiceRunning) MaterialTheme.colorScheme.primary.copy(alpha = 0.2f) else MaterialTheme.colorScheme.surfaceVariant,
-                            CircleShape
-                        ),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = if (isServiceRunning) Icons.Default.Notifications else Icons.Default.NotificationsOff,
-                        contentDescription = "Status Bar Speed Meter",
-                        tint = if (isServiceRunning) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
-
-                Column {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        Text(
-                            text = "Status Bar Live Meter",
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Box(
-                            modifier = Modifier
-                                .size(6.dp)
-                                .background(
-                                    if (isServiceRunning) MaterialTheme.statusGreen else Color.Gray,
-                                    CircleShape
-                                )
-                        )
-                    }
-                    Text(
-                        text = if (isServiceRunning) "Running in background • App can be closed" else "Tap switch to show speed in status bar",
-                        fontSize = 10.5.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-
-            Switch(
-                checked = isServiceRunning,
-                onCheckedChange = { onToggle() },
-                modifier = Modifier.testTag("status_bar_switch"),
-                colors = SwitchDefaults.colors(
-                    checkedThumbColor = MaterialTheme.colorScheme.onPrimary,
-                    checkedTrackColor = MaterialTheme.colorScheme.primary,
-                    uncheckedThumbColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                    uncheckedTrackColor = MaterialTheme.colorScheme.surfaceVariant
-                )
-            )
         }
     }
 }

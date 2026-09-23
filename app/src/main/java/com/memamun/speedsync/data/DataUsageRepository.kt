@@ -218,7 +218,41 @@ class DataUsageRepository(context: Context) {
         }
     }
 
+    /**
+     * Clears all recorded historical usage data and resets today's tracking.
+     */
+    fun clearHistory() {
+        synchronized(lock) {
+            val pastDays = getHistoryDates()
+            val today = getTodayDate()
+            val editor = prefs.edit()
+            for (oldDate in pastDays) {
+                editor.remove("${KEY_WIFI_PREFIX}_$oldDate")
+                editor.remove("${KEY_MOBILE_PREFIX}_$oldDate")
+            }
+            editor.remove("${KEY_WIFI_PREFIX}_$today")
+            editor.remove("${KEY_MOBILE_PREFIX}_$today")
+            editor.remove(KEY_HISTORY_DATES)
+            editor.remove(KEY_CURRENT_DATE)
+            editor.apply()
+
+            cachedToday = today
+            cachedWifi = 0L
+            cachedMobile = 0L
+            lastFlushTime = System.currentTimeMillis()
+        }
+    }
+
     companion object {
+        @Volatile
+        private var instance: DataUsageRepository? = null
+
+        fun getInstance(context: Context): DataUsageRepository {
+            return instance ?: synchronized(this) {
+                instance ?: DataUsageRepository(context.applicationContext).also { instance = it }
+            }
+        }
+
         private const val KEY_SERVICE_ENABLED = "key_service_enabled"
         private const val KEY_START_ON_BOOT = "key_start_on_boot"
         private const val KEY_SPEED_UNIT = "key_speed_unit"

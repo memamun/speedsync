@@ -113,7 +113,7 @@ fun SettingsDialog(
                 )
 
                 Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    ThemeMode.values().forEach { mode ->
+                    ThemeMode.entries.forEach { mode ->
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -297,7 +297,7 @@ fun SettingsDialog(
                 )
 
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    SpeedUnit.values().forEach { unit ->
+                    SpeedUnit.entries.forEach { unit ->
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -369,6 +369,14 @@ fun SettingsDialog(
                         fontSize = 14.sp
                     )
                 }
+
+                Text(
+                    text = "SpeedSync v${com.memamun.speedsync.BuildConfig.VERSION_NAME} (${com.memamun.speedsync.BuildConfig.VERSION_CODE})",
+                    fontSize = 11.5.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                    modifier = Modifier.align(Alignment.CenterHorizontally)
+                )
             }
         }
     }

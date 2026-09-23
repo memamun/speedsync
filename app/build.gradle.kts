@@ -28,13 +28,19 @@ android {
       keyPassword = "android"
     }
     create("release") {
-      val keystorePath = System.getenv("KEYSTORE_PATH") ?: "${rootDir}/speedsync-release-key.jks"
+      val keystorePath = System.getenv("KEYSTORE_PATH")
+        ?: (project.findProperty("KEYSTORE_PATH") as? String)
+        ?: "${rootDir}/speedsync-release-key.jks"
       val releaseKeystore = file(keystorePath)
-      if (releaseKeystore.exists()) {
+      val envStorePass = System.getenv("STORE_PASSWORD") ?: (project.findProperty("STORE_PASSWORD") as? String)
+      val envKeyAlias = System.getenv("KEY_ALIAS") ?: (project.findProperty("KEY_ALIAS") as? String)
+      val envKeyPass = System.getenv("KEY_PASSWORD") ?: (project.findProperty("KEY_PASSWORD") as? String)
+
+      if (releaseKeystore.exists() && envStorePass != null && envKeyAlias != null && envKeyPass != null) {
         storeFile = releaseKeystore
-        storePassword = System.getenv("STORE_PASSWORD") ?: "speedsync2026"
-        keyAlias = System.getenv("KEY_ALIAS") ?: "speedsync"
-        keyPassword = System.getenv("KEY_PASSWORD") ?: "speedsync2026"
+        storePassword = envStorePass
+        keyAlias = envKeyAlias
+        keyPassword = envKeyPass
       } else {
         storeFile = file("${rootDir}/debug.keystore")
         storePassword = "android"
@@ -47,7 +53,8 @@ android {
   buildTypes {
     release {
       isCrunchPngs = false
-      isMinifyEnabled = false
+      isMinifyEnabled = true
+      isShrinkResources = true
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
       signingConfig = signingConfigs.getByName("release")
     }
@@ -93,15 +100,9 @@ dependencies {
   implementation(libs.androidx.lifecycle.runtime.compose)
   implementation(libs.androidx.lifecycle.runtime.ktx)
   implementation(libs.androidx.lifecycle.viewmodel.compose)
-  implementation(libs.androidx.room.ktx)
-  implementation(libs.androidx.room.runtime)
-  implementation(libs.converter.moshi)
   implementation(libs.kotlinx.coroutines.android)
   implementation(libs.kotlinx.coroutines.core)
-  implementation(libs.logging.interceptor)
-  implementation(libs.moshi.kotlin)
   implementation(libs.okhttp)
-  implementation(libs.retrofit)
   testImplementation(libs.androidx.compose.ui.test.junit4)
   testImplementation(libs.androidx.core)
   testImplementation(libs.androidx.junit)
@@ -118,6 +119,5 @@ dependencies {
   androidTestImplementation(libs.androidx.runner)
   debugImplementation(libs.androidx.compose.ui.test.manifest)
   debugImplementation(libs.androidx.compose.ui.tooling)
-  "ksp"(libs.androidx.room.compiler)
-  "ksp"(libs.moshi.kotlin.codegen)
+
 }
