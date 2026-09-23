@@ -13,8 +13,8 @@ android {
     applicationId = "com.memamun.speedsync"
     minSdk = 24
     targetSdk = 36
-    versionCode = 1
-    versionName = "1.0"
+    versionCode = 2
+    versionName = "1.1.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
@@ -31,15 +31,21 @@ android {
         ?: (project.findProperty("KEYSTORE_PATH") as? String)
         ?: "${rootDir}/speedsync-release-key.jks"
       val releaseKeystore = file(keystorePath)
-      val envStorePass = System.getenv("STORE_PASSWORD") ?: (project.findProperty("STORE_PASSWORD") as? String)
-      val envKeyAlias = System.getenv("KEY_ALIAS") ?: (project.findProperty("KEY_ALIAS") as? String)
-      val envKeyPass = System.getenv("KEY_PASSWORD") ?: (project.findProperty("KEY_PASSWORD") as? String)
+      val storePass = System.getenv("STORE_PASSWORD")
+        ?: (project.findProperty("STORE_PASSWORD") as? String)
+        ?: "speedsync2026"
+      val keyAliasName = System.getenv("KEY_ALIAS")
+        ?: (project.findProperty("KEY_ALIAS") as? String)
+        ?: "speedsync"
+      val keyPass = System.getenv("KEY_PASSWORD")
+        ?: (project.findProperty("KEY_PASSWORD") as? String)
+        ?: "speedsync2026"
 
-      if (releaseKeystore.exists() && envStorePass != null && envKeyAlias != null && envKeyPass != null) {
+      if (releaseKeystore.exists()) {
         storeFile = releaseKeystore
-        storePassword = envStorePass
-        keyAlias = envKeyAlias
-        keyPassword = envKeyPass
+        storePassword = storePass
+        keyAlias = keyAliasName
+        keyPassword = keyPass
       } else {
         storeFile = file("${rootDir}/debug.keystore")
         storePassword = "android"
