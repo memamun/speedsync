@@ -17,7 +17,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.StrokeCap
@@ -112,13 +114,15 @@ fun SpeedGauge(
         }
 
         // Signal / Activity Indicator Dots at bottom of circle
+        val activeBars by remember {
+            derivedStateOf { (animatedProgress * 5).toInt().coerceIn(1, 5) }
+        }
         Row(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .padding(bottom = 6.dp),
             horizontalArrangement = Arrangement.spacedBy(4.dp)
         ) {
-            val activeBars = (animatedProgress * 5).toInt().coerceIn(1, 5)
             for (i in 1..5) {
                 val isActive = i <= activeBars
                 Box(

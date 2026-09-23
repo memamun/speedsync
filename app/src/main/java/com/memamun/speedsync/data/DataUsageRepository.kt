@@ -55,15 +55,85 @@ class DataUsageRepository(context: Context) {
         return calendar.timeInMillis
     }
 
-    private fun getTodayDate(now: Long = System.currentTimeMillis()): String {
-        synchronized(lock) {
-            if (cachedToday.isNotEmpty() && now < nextMidnightEpochMs) {
-                return cachedToday
+    private fun checkDayRollover(now: Long) {
+        if (cachedToday.isEmpty() || now >= nextMidnightEpochMs) {
+            val newToday = getDateFormat().format(Date(now))
+            if (cachedToday.isEmpty()) {
+                cachedToday = newToday
+                nextMidnightEpochMs = calculateNextMidnightEpochMs(now)
+                cachedWifi = prefs.getLong("${KEY_WIFI_PREFIX}_$newToday", 0L)
+                cachedMobile = prefs.getLong("${KEY_MOBILE_PREFIX}_$newToday", 0L)
+                if (prefs.getString(KEY_CURRENT_DATE, "").isNullOrEmpty()) {
+                    prefs.edit().putString(KEY_CURRENT_DATE, newToday).apply()
+                }
+            } else if (newToday != cachedToday) {
+                // Day rollover! Flush previous day data first under the previous cachedToday AND commit it to history immediately
+                val previousDay = cachedToday
+                recordDayToHistory(previousDay, cachedWifi, cachedMobile)
+                cachedToday = newToday
+                nextMidnightEpochMs = calculateNextMidnightEpochMs(now)
+                cachedWifi = prefs.getLong("${KEY_WIFI_PREFIX}_$newToday", 0L)
+                cachedMobile = prefs.getLong("${KEY_MOBILE_PREFIX}_$newToday", 0L)
+                prefs.edit().putString(KEY_CURRENT_DATE, newToday).apply()
+            } else {
+                nextMidnightEpochMs = calculateNextMidnightEpochMs(now)
             }
-            val formatted = getDateFormat().format(Date(now))
-            cachedToday = formatted
-            nextMidnightEpochMs = calculateNextMidnightEpochMs(now)
-            return formatted
+        }
+    }
+
+    private fun recordDayToHistory(day: String, wifi: Long, mobile: Long) {
+        val pastDays = getHistoryDates().toMutableSet()
+        pastDays.add(day)
+        val editor = prefs.edit()
+        editor.putLong("${KEY_WIFI_PREFIX}_$day", wifi)
+        editor.putLong("${KEY_MOBILE_PREFIX}_$day", mobile)
+        if (pastDays.size > MAX_HISTORY_DAYS) {
+            val sorted = pastDays.toList().sortedDescending()
+            val toKeep = sorted.take(MAX_HISTORY_DAYS).toSet()
+            val toRemove = sorted.drop(MAX_HISTORY_DAYS)
+            for (oldDate in toRemove) {
+                editor.remove("${KEY_WIFI_PREFIX}_$oldDate")
+                editor.remove("${KEY_MOBILE_PREFIX}_$oldDate")
+            }
+            editor.putStringSet(KEY_HISTORY_DATES, toKeep)
+        } else {
+            editor.putStringSet(KEY_HISTORY_DATES, pastDays)
+        }
+        editor.apply()
+    }
+
+    fun addUsageAtTimestamp(wifiDelta: Long, mobileDelta: Long, timestamp: Long) {
+        if (wifiDelta <= 0L && mobileDelta <= 0L) return
+
+        val now = System.currentTimeMillis()
+        var shouldFlush = false
+
+        synchronized(lock) {
+            checkDayRollover(now)
+            val dateStr = getDateFormat().format(Date(timestamp))
+            if (dateStr == cachedToday) {
+                cachedWifi += wifiDelta
+                cachedMobile += mobileDelta
+                if (now - lastFlushTime >= FLUSH_INTERVAL_MS) {
+                    shouldFlush = true
+                }
+            } else {
+                // Traffic attributed to a past day (e.g. sleep spanning midnight)
+                val existingWifi = prefs.getLong("${KEY_WIFI_PREFIX}_$dateStr", 0L) + wifiDelta
+                val existingMobile = prefs.getLong("${KEY_MOBILE_PREFIX}_$dateStr", 0L) + mobileDelta
+                recordDayToHistory(dateStr, existingWifi, existingMobile)
+            }
+        }
+
+        if (shouldFlush) {
+            flush()
+        }
+    }
+
+    fun getTodayDate(now: Long = System.currentTimeMillis()): String {
+        synchronized(lock) {
+            checkDayRollover(now)
+            return cachedToday
         }
     }
 
@@ -116,14 +186,7 @@ class DataUsageRepository(context: Context) {
         var shouldFlush = false
 
         synchronized(lock) {
-            val today = getTodayDate(now)
-            if (cachedToday != today) {
-                // Day rollover! Flush previous day data first
-                flushInternal(now)
-                cachedToday = today
-                cachedWifi = prefs.getLong("${KEY_WIFI_PREFIX}_$today", 0L)
-                cachedMobile = prefs.getLong("${KEY_MOBILE_PREFIX}_$today", 0L)
-            }
+            checkDayRollover(now)
             cachedWifi += wifiDelta
             cachedMobile += mobileDelta
 
@@ -201,16 +264,8 @@ class DataUsageRepository(context: Context) {
     fun getTodayUsage(): Triple<Long, Long, Long> {
         val now = System.currentTimeMillis()
         synchronized(lock) {
-            if (cachedToday.isNotEmpty() && now < nextMidnightEpochMs) {
-                return Triple(cachedWifi, cachedMobile, cachedWifi + cachedMobile)
-            }
-            val today = getTodayDate(now)
-            val wifi = prefs.getLong("${KEY_WIFI_PREFIX}_$today", 0L)
-            val mobile = prefs.getLong("${KEY_MOBILE_PREFIX}_$today", 0L)
-            cachedToday = today
-            cachedWifi = wifi
-            cachedMobile = mobile
-            return Triple(wifi, mobile, wifi + mobile)
+            checkDayRollover(now)
+            return Triple(cachedWifi, cachedMobile, cachedWifi + cachedMobile)
         }
     }
 
@@ -218,15 +273,25 @@ class DataUsageRepository(context: Context) {
         return prefs.getStringSet(KEY_HISTORY_DATES, emptySet()) ?: emptySet()
     }
 
+    data class TodayUsageSnapshot(
+        val today: String,
+        val wifi: Long,
+        val mobile: Long,
+        val pastDates: Set<String>
+    )
+
     fun getUsageHistory(): List<DayUsageItem> {
-        flush() // Ensure latest in-memory numbers are written before reading
-        val today = getTodayDate()
-        val dates = (getHistoryDates() + today).toList().sortedDescending()
+        val snapshot = synchronized(lock) {
+            checkDayRollover(System.currentTimeMillis())
+            TodayUsageSnapshot(cachedToday, cachedWifi, cachedMobile, getHistoryDates())
+        }
+        val today = snapshot.today
+        val dates = (snapshot.pastDates + today).toList().sortedDescending()
         val fmt = getDateFormat()
         val dispFmt = getDisplayDateFormat()
         return dates.take(30).map { dateStr ->
-            val wifi = prefs.getLong("${KEY_WIFI_PREFIX}_$dateStr", 0L)
-            val mobile = prefs.getLong("${KEY_MOBILE_PREFIX}_$dateStr", 0L)
+            val wifi = if (dateStr == today) snapshot.wifi else prefs.getLong("${KEY_WIFI_PREFIX}_$dateStr", 0L)
+            val mobile = if (dateStr == today) snapshot.mobile else prefs.getLong("${KEY_MOBILE_PREFIX}_$dateStr", 0L)
             val formattedDate = try {
                 val d = fmt.parse(dateStr)
                 if (dateStr == today) "Today" else if (d != null) dispFmt.format(d) else dateStr

@@ -38,18 +38,31 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.util.Locale
 
 class SpeedMeterService : Service() {
 
     private val serviceScope = CoroutineScope(Dispatchers.Default + Job())
     private var updateJob: Job? = null
+    private val samplingMutex = Mutex()
+
+    private sealed class LifecycleEvent {
+        object ScreenOff : LifecycleEvent()
+        object ScreenOn : LifecycleEvent()
+        object Start : LifecycleEvent()
+        object Stop : LifecycleEvent()
+    }
+
+    private val lifecycleChannel = Channel<LifecycleEvent>(Channel.UNLIMITED)
 
     private lateinit var dataRepo: DataUsageRepository
     private lateinit var networkHelper: NetworkHelper
@@ -61,10 +74,10 @@ class SpeedMeterService : Service() {
     private var lastMobileTxBytes: Long = 0L
     private var lastTimestamp: Long = 0L
 
-    private var lastNotifiedSpeedBytes: Long = -1L
-    private var lastNotifiedTotalBytes: Long = -1L
-    private var lastNotifiedNetworkName: String = ""
-    private var lastNotificationTime: Long = 0L
+    private var lastNotifiedTitle: String = ""
+    private var lastNotifiedContent: String = ""
+    private var lastNotifiedBigText: String = ""
+    private var lastNotifiedIconIdentifier: String = ""
 
     private var isScreenOn: Boolean = true
     private lateinit var cachedPendingAppIntent: PendingIntent
@@ -73,21 +86,10 @@ class SpeedMeterService : Service() {
         override fun onReceive(context: Context?, intent: Intent?) {
             when (intent?.action) {
                 Intent.ACTION_SCREEN_OFF -> {
-                    isScreenOn = false
-                    // Process final delta before entering deep sleep, flush data, and stop loop
-                    serviceScope.launch {
-                        performSpeedUpdate(forceNotify = false)
-                        dataRepo.flush()
-                        updateJob?.cancel()
-                    }
+                    lifecycleChannel.trySend(LifecycleEvent.ScreenOff)
                 }
                 Intent.ACTION_SCREEN_ON -> {
-                    isScreenOn = true
-                    // Resume active 1-second monitoring loop and credit sleep traffic
-                    startMonitoring()
-                    serviceScope.launch {
-                        performSpeedUpdate(forceNotify = true)
-                    }
+                    lifecycleChannel.trySend(LifecycleEvent.ScreenOn)
                 }
             }
         }
@@ -97,6 +99,7 @@ class SpeedMeterService : Service() {
         super.onCreate()
         dataRepo = DataUsageRepository.getInstance(this)
         networkHelper = NetworkHelper(this)
+        networkHelper.registerNetworkCallback()
         notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         createNotificationChannel()
 
@@ -113,6 +116,18 @@ class SpeedMeterService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
+        // Process all lifecycle and screen events strictly in FIFO order
+        serviceScope.launch {
+            for (event in lifecycleChannel) {
+                when (event) {
+                    is LifecycleEvent.ScreenOff -> handleScreenOff()
+                    is LifecycleEvent.ScreenOn -> handleScreenOn()
+                    is LifecycleEvent.Start -> handleStart()
+                    is LifecycleEvent.Stop -> handleStop()
+                }
+            }
+        }
+
         val filter = IntentFilter().apply {
             addAction(Intent.ACTION_SCREEN_ON)
             addAction(Intent.ACTION_SCREEN_OFF)
@@ -125,16 +140,12 @@ class SpeedMeterService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
             dataRepo.setServiceEnabled(false)
-            dataRepo.flush()
-            try {
-                stopForeground(STOP_FOREGROUND_REMOVE)
-            } catch (_: Exception) {}
-            stopSelf()
+            lifecycleChannel.trySend(LifecycleEvent.Stop)
             return START_NOT_STICKY
         }
 
         // Initialize foreground with initial notification
-        val initialNotification = buildNotification(0L, 0L, "Connecting...", "0 B", "0 B", "0 B")
+        val initialNotification = buildInitialNotification()
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 ServiceCompat.startForeground(
@@ -152,31 +163,162 @@ class SpeedMeterService : Service() {
             } catch (_: Exception) {}
         }
 
-        startMonitoring()
+        lifecycleChannel.trySend(LifecycleEvent.Start)
         return START_STICKY
     }
 
-    private fun startMonitoring() {
+    private suspend fun handleScreenOff() {
+        samplingMutex.withLock {
+            isScreenOn = false
+            updateJob?.cancel()
+            updateJob = null
+            performSpeedUpdateLocked(forceNotify = false)
+            dataRepo.flush()
+        }
+    }
+
+    private suspend fun handleScreenOn() {
+        samplingMutex.withLock {
+            isScreenOn = true
+            creditSleepTrafficAndResetBaselines()
+            performSpeedUpdateLocked(forceNotify = true)
+            startMonitoringLocked()
+        }
+    }
+
+    private suspend fun handleStart() {
+        samplingMutex.withLock {
+            if (lastRxBytes == 0L && lastTxBytes == 0L) {
+                lastRxBytes = TrafficStats.getTotalRxBytes()
+                lastTxBytes = TrafficStats.getTotalTxBytes()
+                lastMobileRxBytes = TrafficStats.getMobileRxBytes()
+                lastMobileTxBytes = TrafficStats.getMobileTxBytes()
+                lastTimestamp = System.currentTimeMillis()
+            }
+            // Immediately populate live readings so "Connecting..." is immediately replaced
+            performSpeedUpdateLocked(forceNotify = true)
+            startMonitoringLocked()
+        }
+    }
+
+    private suspend fun handleStop() {
+        samplingMutex.withLock {
+            isScreenOn = false
+            updateJob?.cancel()
+            updateJob = null
+            performSpeedUpdateLocked(forceNotify = false)
+            dataRepo.flush()
+            try {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+            } catch (_: Exception) {}
+            stopSelf()
+        }
+    }
+
+    private fun buildInitialNotification(): Notification {
+        val title = "↓ 0.0 KB/s   ↑ 0.0 KB/s"
+        val content = "Connecting...  •  Today: 0 B"
+        val bigText = "Network: Connecting...\nDownload: 0.0 KB/s   Upload: 0.0 KB/s\nToday: 0 B"
+        val statusSpeed = StatusBarSpeed("0", "KB/s")
+        val statusIconCompat = getExactSpeedIcon(0L) ?: getDynamicSpeedIcon(statusSpeed.value, statusSpeed.unit)
+        return buildNotification(title, content, bigText, "Connecting...", statusIconCompat)
+    }
+
+    private fun creditSleepTrafficAndResetBaselines() {
+        val currentRx = TrafficStats.getTotalRxBytes()
+        val currentTx = TrafficStats.getTotalTxBytes()
+        val currentMobileRx = TrafficStats.getMobileRxBytes()
+        val currentMobileTx = TrafficStats.getMobileTxBytes()
+        val now = System.currentTimeMillis()
+
+        if (currentRx >= 0L && currentTx >= 0L && lastRxBytes > 0L) {
+            val rxDelta = if (currentRx >= lastRxBytes) currentRx - lastRxBytes else 0L
+            val txDelta = if (currentTx >= lastTxBytes) currentTx - lastTxBytes else 0L
+            val mobileRxDelta = if (lastMobileRxBytes > 0L && currentMobileRx >= lastMobileRxBytes) currentMobileRx - lastMobileRxBytes else 0L
+            val mobileTxDelta = if (lastMobileTxBytes > 0L && currentMobileTx >= lastMobileTxBytes) currentMobileTx - lastMobileTxBytes else 0L
+
+            val totalMobileDelta = mobileRxDelta + mobileTxDelta
+            val totalDelta = rxDelta + txDelta
+
+            if (totalDelta > 0L) {
+                val connInfo = networkHelper.getConnectionInfo()
+                val wifiDelta: Long
+                val mobileDelta: Long
+                if (connInfo.isWifi) {
+                    wifiDelta = (totalDelta - totalMobileDelta).coerceAtLeast(0L)
+                    mobileDelta = totalMobileDelta.coerceAtLeast(0L)
+                } else if (connInfo.isMobile) {
+                    wifiDelta = 0L
+                    mobileDelta = totalMobileDelta.coerceAtLeast(0L)
+                } else {
+                    mobileDelta = totalMobileDelta.coerceAtLeast(0L)
+                    wifiDelta = (totalDelta - totalMobileDelta).coerceAtLeast(0L)
+                }
+
+                attributeSleepTraffic(wifiDelta, mobileDelta, lastTimestamp, now)
+            }
+        }
+
+        lastRxBytes = currentRx
+        lastTxBytes = currentTx
+        lastMobileRxBytes = currentMobileRx
+        lastMobileTxBytes = currentMobileTx
+        lastTimestamp = now
+    }
+
+    private fun attributeSleepTraffic(wifiDelta: Long, mobileDelta: Long, sleepStart: Long, wakeTime: Long) {
+        if (sleepStart <= 0L || wakeTime <= sleepStart) {
+            dataRepo.addUsage(wifiDelta, mobileDelta)
+            return
+        }
+
+        val cal = java.util.Calendar.getInstance()
+        cal.timeInMillis = wakeTime
+        cal.set(java.util.Calendar.HOUR_OF_DAY, 0)
+        cal.set(java.util.Calendar.MINUTE, 0)
+        cal.set(java.util.Calendar.SECOND, 0)
+        cal.set(java.util.Calendar.MILLISECOND, 0)
+        val todayMidnight = cal.timeInMillis
+
+        // If sleep started before today's midnight and woke up after midnight, split proportionally by sleep duration
+        if (sleepStart < todayMidnight && wakeTime >= todayMidnight) {
+            val totalSleepDuration = (wakeTime - sleepStart).toDouble()
+            val preMidnightDuration = (todayMidnight - sleepStart).toDouble()
+            val ratio = (preMidnightDuration / totalSleepDuration).coerceIn(0.0, 1.0)
+
+            val preWifi = (wifiDelta * ratio).toLong()
+            val preMobile = (mobileDelta * ratio).toLong()
+            val postWifi = wifiDelta - preWifi
+            val postMobile = mobileDelta - preMobile
+
+            if (preWifi > 0L || preMobile > 0L) {
+                dataRepo.addUsageAtTimestamp(preWifi, preMobile, sleepStart)
+            }
+            if (postWifi > 0L || postMobile > 0L) {
+                dataRepo.addUsageAtTimestamp(postWifi, postMobile, wakeTime)
+            }
+        } else {
+            dataRepo.addUsage(wifiDelta, mobileDelta)
+        }
+    }
+
+    private fun startMonitoringLocked() {
         updateJob?.cancel()
-
-        // Prime the initial byte counts
-        lastRxBytes = TrafficStats.getTotalRxBytes()
-        lastTxBytes = TrafficStats.getTotalTxBytes()
-        lastMobileRxBytes = TrafficStats.getMobileRxBytes()
-        lastMobileTxBytes = TrafficStats.getMobileTxBytes()
-        lastTimestamp = System.currentTimeMillis()
-
         if (!isScreenOn) return
 
         updateJob = serviceScope.launch {
             while (isActive) {
                 delay(1000)
-                performSpeedUpdate()
+                samplingMutex.withLock {
+                    if (isScreenOn) {
+                        performSpeedUpdateLocked()
+                    }
+                }
             }
         }
     }
 
-    private fun performSpeedUpdate(forceNotify: Boolean = false) {
+    private fun performSpeedUpdateLocked(forceNotify: Boolean = false) {
         val now = System.currentTimeMillis()
         val currentRx = TrafficStats.getTotalRxBytes()
         val currentTx = TrafficStats.getTotalTxBytes()
@@ -251,28 +393,41 @@ class SpeedMeterService : Service() {
 
         // Update notification when screen is on or explicitly requested
         if (isScreenOn || forceNotify) {
-            val shouldNotify = forceNotify ||
-                totalSpeedBytes != lastNotifiedSpeedBytes ||
-                todayTotal != lastNotifiedTotalBytes ||
-                connInfo.networkName != lastNotifiedNetworkName ||
-                (now - lastNotificationTime) >= 5000L
+            val speedUnit = dataRepo.getSpeedUnit()
+            val (downSpeedStr, downUnit) = DataUsageRepository.formatSpeed(rxSpeedBytes, speedUnit)
+            val (upSpeedStr, upUnit) = DataUsageRepository.formatSpeed(txSpeedBytes, speedUnit)
+            val title = "↓ $downSpeedStr $downUnit   ↑ $upSpeedStr $upUnit"
 
-            if (shouldNotify) {
-                val notification = buildNotification(
-                    rxSpeedBytes = rxSpeedBytes,
-                    txSpeedBytes = txSpeedBytes,
-                    networkName = connInfo.networkName,
-                    todayTotal = DataUsageRepository.formatBytes(todayTotal),
-                    todayWifi = DataUsageRepository.formatBytes(todayWifi),
-                    todayMobile = DataUsageRepository.formatBytes(todayMobile)
-                )
+            val todayTotalStr = DataUsageRepository.formatBytes(todayTotal)
+            val todayWifiStr = DataUsageRepository.formatBytes(todayWifi)
+            val todayMobileStr = DataUsageRepository.formatBytes(todayMobile)
+            val content = "${connInfo.networkName}  •  Today: $todayTotalStr"
+            val bigText = "Network: ${connInfo.networkName}\nDownload: $downSpeedStr $downUnit   Upload: $upSpeedStr $upUnit\nToday: $todayTotalStr  (Wi-Fi: $todayWifiStr  •  Mobile: $todayMobileStr)"
+
+            val totalActiveBytes = rxSpeedBytes + txSpeedBytes
+            val statusSpeed = formatStatusBarSpeed(totalActiveBytes)
+            val exactIcon = getExactSpeedIcon(totalActiveBytes)
+            val iconIdentifier = if (exactIcon != null && lastExactResId != 0) {
+                "exact_$lastExactResId"
+            } else {
+                "dyn_${statusSpeed.value}_${statusSpeed.unit}"
+            }
+
+            val contentChanged = title != lastNotifiedTitle ||
+                content != lastNotifiedContent ||
+                bigText != lastNotifiedBigText ||
+                iconIdentifier != lastNotifiedIconIdentifier
+
+            if (forceNotify || contentChanged) {
+                val statusIconCompat = exactIcon ?: getDynamicSpeedIcon(statusSpeed.value, statusSpeed.unit)
+                val notification = buildNotification(title, content, bigText, connInfo.networkName, statusIconCompat)
 
                 try {
                     notificationManager.notify(NOTIFICATION_ID, notification)
-                    lastNotifiedSpeedBytes = totalSpeedBytes
-                    lastNotifiedTotalBytes = todayTotal
-                    lastNotifiedNetworkName = connInfo.networkName
-                    lastNotificationTime = now
+                    lastNotifiedTitle = title
+                    lastNotifiedContent = content
+                    lastNotifiedBigText = bigText
+                    lastNotifiedIconIdentifier = iconIdentifier
                 } catch (_: Exception) {}
             }
         }
@@ -312,28 +467,12 @@ class SpeedMeterService : Service() {
     private var cachedIconCompat: IconCompat? = null
 
     private fun buildNotification(
-        rxSpeedBytes: Long,
-        txSpeedBytes: Long,
+        title: String,
+        content: String,
+        bigText: String,
         networkName: String,
-        todayTotal: String,
-        todayWifi: String,
-        todayMobile: String
+        statusIconCompat: IconCompat?
     ): Notification {
-        val speedUnit = dataRepo.getSpeedUnit()
-        val (downSpeedStr, downUnit) = DataUsageRepository.formatSpeed(rxSpeedBytes, speedUnit)
-        val (upSpeedStr, upUnit) = DataUsageRepository.formatSpeed(txSpeedBytes, speedUnit)
-
-        // Calculate active speed (download + upload) for status bar icon
-        val totalActiveBytes = rxSpeedBytes + txSpeedBytes
-        val statusSpeed = formatStatusBarSpeed(totalActiveBytes)
-
-        // Exact pre-rendered drawable icon matching Internet Speed Meter Lite (fallback to dynamic)
-        val statusIconCompat = getExactSpeedIcon(totalActiveBytes) ?: getDynamicSpeedIcon(statusSpeed.value, statusSpeed.unit)
-
-        val title = "↓ $downSpeedStr $downUnit   ↑ $upSpeedStr $upUnit"
-        val content = "$networkName  •  Today: $todayTotal"
-        val bigText = "Network: $networkName\nDownload: $downSpeedStr $downUnit   Upload: $upSpeedStr $upUnit\nToday: $todayTotal  (Wi-Fi: $todayWifi  •  Mobile: $todayMobile)"
-
         val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(title)
             .setContentText(content)
@@ -580,13 +719,18 @@ class SpeedMeterService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
+        updateJob?.cancel()
+        updateJob = null
+        lifecycleChannel.close()
         try {
             unregisterReceiver(screenReceiver)
         } catch (_: Exception) {}
         try {
+            networkHelper.unregisterNetworkCallback()
+        } catch (_: Exception) {}
+        try {
             dataRepo.flush()
         } catch (_: Exception) {}
-        updateJob?.cancel()
         serviceScope.cancel()
         _isServiceRunning.value = false
     }

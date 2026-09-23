@@ -1,9 +1,17 @@
 package com.memamun.speedsync.data
 
+import android.content.Context
+import androidx.test.core.app.ApplicationProvider
 import com.memamun.speedsync.model.SpeedUnit
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [34])
 class DataUsageRepositoryTest {
 
     @Test
@@ -87,5 +95,32 @@ class DataUsageRepositoryTest {
         val result = DataUsageRepository.formatSpeed(131072L, SpeedUnit.MBPS)
         assertEquals("1.0", result.first)
         assertEquals("Mbps", result.second)
+    }
+
+    @Test
+    fun repository_addUsage_accumulatesTodayUsage() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val repo = DataUsageRepository(context)
+        repo.clearHistory()
+
+        repo.addUsage(1024L, 2048L)
+        val (wifi, mobile, total) = repo.getTodayUsage()
+        assertEquals(1024L, wifi)
+        assertEquals(2048L, mobile)
+        assertEquals(3072L, total)
+    }
+
+    @Test
+    fun repository_addUsageAtTimestamp_attributesToCorrectDate() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val repo = DataUsageRepository(context)
+        repo.clearHistory()
+
+        // Attribution to yesterday
+        val yesterdayTimestamp = System.currentTimeMillis() - 86400000L
+        repo.addUsageAtTimestamp(5000L, 10000L, yesterdayTimestamp)
+
+        val history = repo.getUsageHistory()
+        assertTrue(history.any { it.wifiBytes == 5000L && it.mobileBytes == 10000L })
     }
 }

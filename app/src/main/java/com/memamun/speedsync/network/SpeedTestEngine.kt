@@ -4,19 +4,23 @@ import com.memamun.speedsync.model.SpeedTestPhase
 import com.memamun.speedsync.model.SpeedTestResult
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.Call
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.InputStream
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.abs
 import kotlin.math.roundToLong
 
@@ -31,10 +35,30 @@ class SpeedTestEngine {
     private val _testResult = MutableStateFlow(SpeedTestResult())
     val testResult: StateFlow<SpeedTestResult> = _testResult.asStateFlow()
 
-    @Volatile
-    private var activeCall: Call? = null
+    private val activeCalls = CopyOnWriteArrayList<Call>()
+    private val activeTestId = AtomicLong(0L)
+
+    private fun registerCall(call: Call) {
+        activeCalls.add(call)
+    }
+
+    private fun unregisterCall(call: Call) {
+        activeCalls.remove(call)
+    }
+
+    private fun cancelAllCalls() {
+        for (call in activeCalls) {
+            try {
+                call.cancel()
+            } catch (_: Exception) {}
+        }
+        activeCalls.clear()
+    }
 
     suspend fun runSpeedTest() = withContext(Dispatchers.IO) {
+        val testId = activeTestId.incrementAndGet()
+        cancelAllCalls()
+
         _testResult.value = SpeedTestResult(
             phase = SpeedTestPhase.PING,
             progress = 0.05f
@@ -51,36 +75,41 @@ class SpeedTestEngine {
         )
 
         for ((index, url) in pingEndpoints.withIndex()) {
-            if (!currentCoroutineContext().isActive) break
-            val start = System.currentTimeMillis()
+            if (!currentCoroutineContext().isActive || activeTestId.get() != testId) return@withContext
+            val startNano = System.nanoTime()
             try {
                 val req = Request.Builder().url(url).head().build()
                 val call = client.newCall(req)
-                activeCall = call
-                call.execute().use { resp ->
-                    if (resp.isSuccessful) {
-                        val duration = System.currentTimeMillis() - start
-                        pingTimes.add(duration)
-                    } else {
-                        failedPings++
+                registerCall(call)
+                try {
+                    call.execute().use { resp ->
+                        if (resp.isSuccessful) {
+                            val durationMs = (System.nanoTime() - startNano) / 1_000_000L
+                            pingTimes.add(durationMs)
+                        } else {
+                            failedPings++
+                        }
                     }
+                } finally {
+                    unregisterCall(call)
                 }
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
                 failedPings++
-            } finally {
-                activeCall = null
             }
+
+            if (activeTestId.get() != testId) return@withContext
+
             val progress = 0.05f + (0.15f * (index + 1) / pingEndpoints.size)
             _testResult.value = _testResult.value.copy(
                 progress = progress,
                 pingMs = if (pingTimes.isNotEmpty()) pingTimes.average().roundToLong() else 0L
             )
-            delay(120)
+            delay(100)
         }
 
-        if (!currentCoroutineContext().isActive) return@withContext
+        if (!currentCoroutineContext().isActive || activeTestId.get() != testId) return@withContext
 
         if (pingTimes.isEmpty()) {
             _testResult.value = _testResult.value.copy(
@@ -108,60 +137,77 @@ class SpeedTestEngine {
             progress = 0.25f
         )
 
-        // Phase 2: Download Speed
+        // Phase 2: Download Speed (sustained transfer up to 7 seconds using monotonic time)
         var totalBytesReceived = 0L
-        val downloadStart = System.currentTimeMillis()
-        var lastReportTime = downloadStart
-        val downloadUrl = "https://speed.cloudflare.com/__down?bytes=25000000"
+        val downloadStartNano = System.nanoTime()
+        var lastReportNano = downloadStartNano
+        val maxDownloadDurationNano = 7_000_000_000L // 7 seconds in nanoseconds
+        val downloadUrl = "https://speed.cloudflare.com/__down?bytes=50000000"
 
         try {
-            val req = Request.Builder().url(downloadUrl).build()
-            val call = client.newCall(req)
-            activeCall = call
-            call.execute().use { response ->
-                val body = response.body
-                if (response.isSuccessful && body != null) {
-                    val stream: InputStream = body.byteStream()
-                    val buffer = ByteArray(16384)
-                    var bytesRead = 0
-                    val maxTestDuration = 7000L // 7 seconds
+            while (currentCoroutineContext().isActive &&
+                activeTestId.get() == testId &&
+                (System.nanoTime() - downloadStartNano) < maxDownloadDurationNano
+            ) {
+                val req = Request.Builder().url(downloadUrl).build()
+                val call = client.newCall(req)
+                registerCall(call)
+                try {
+                    call.execute().use { response ->
+                        val body = response.body
+                        if (response.isSuccessful && body != null) {
+                            val stream: InputStream = body.byteStream()
+                            val buffer = ByteArray(32768)
+                            var bytesRead = 0
 
-                    while (currentCoroutineContext().isActive && stream.read(buffer).also { bytesRead = it } != -1) {
-                        totalBytesReceived += bytesRead
-                        val now = System.currentTimeMillis()
-                        val elapsed = now - downloadStart
+                            while (currentCoroutineContext().isActive &&
+                                activeTestId.get() == testId &&
+                                stream.read(buffer).also { bytesRead = it } != -1
+                            ) {
+                                totalBytesReceived += bytesRead
+                                val nowNano = System.nanoTime()
+                                val elapsedNano = nowNano - downloadStartNano
 
-                        if (now - lastReportTime >= 150) {
-                            val curMbps = if (elapsed > 0) (totalBytesReceived * 8.0) / (elapsed * 1000.0) else 0.0
-                            val progress = 0.25f + (0.45f * (elapsed.toFloat() / maxTestDuration)).coerceAtMost(0.45f)
-                            _testResult.value = _testResult.value.copy(
-                                currentSpeedMbps = curMbps,
-                                downloadSpeedMbps = curMbps,
-                                progress = progress
-                            )
-                            lastReportTime = now
-                        }
+                                if (nowNano - lastReportNano >= 150_000_000L) { // 150ms
+                                    val elapsedSec = elapsedNano / 1_000_000_000.0
+                                    val curMbps = if (elapsedSec > 0) (totalBytesReceived * 8.0) / (elapsedSec * 1_000_000.0) else 0.0
+                                    val progress = 0.25f + (0.45f * (elapsedNano.toFloat() / maxDownloadDurationNano)).coerceAtMost(0.45f)
+                                    _testResult.value = _testResult.value.copy(
+                                        currentSpeedMbps = curMbps,
+                                        downloadSpeedMbps = curMbps,
+                                        progress = progress
+                                    )
+                                    lastReportNano = nowNano
+                                }
 
-                        if (elapsed >= maxTestDuration) {
-                            break
+                                if (elapsedNano >= maxDownloadDurationNano) {
+                                    break
+                                }
+                            }
+                        } else {
+                            if (totalBytesReceived == 0L) {
+                                throw IllegalStateException("Download server returned HTTP ${response.code}")
+                            }
                         }
                     }
-
-                    val totalElapsed = (System.currentTimeMillis() - downloadStart).coerceAtLeast(100)
-                    val finalCalculatedDownload = (totalBytesReceived * 8.0) / (totalElapsed * 1000.0)
-                    _testResult.value = _testResult.value.copy(
-                        currentSpeedMbps = finalCalculatedDownload,
-                        downloadSpeedMbps = finalCalculatedDownload,
-                        progress = 0.70f
-                    )
-                } else {
-                    throw IllegalStateException("Download server returned HTTP ${response.code}")
+                } finally {
+                    unregisterCall(call)
                 }
             }
+
+            if (activeTestId.get() != testId) return@withContext
+
+            val totalElapsedSec = ((System.nanoTime() - downloadStartNano).coerceAtLeast(100_000_000L)) / 1_000_000_000.0
+            val finalCalculatedDownload = (totalBytesReceived * 8.0) / (totalElapsedSec * 1_000_000.0)
+            _testResult.value = _testResult.value.copy(
+                currentSpeedMbps = finalCalculatedDownload,
+                downloadSpeedMbps = finalCalculatedDownload,
+                progress = 0.70f
+            )
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            if (!currentCoroutineContext().isActive) return@withContext
+            if (!currentCoroutineContext().isActive || activeTestId.get() != testId) return@withContext
             _testResult.value = _testResult.value.copy(
                 phase = SpeedTestPhase.ERROR,
                 errorMessage = "Download test failed: ${e.localizedMessage ?: "Connection error"}",
@@ -169,77 +215,92 @@ class SpeedTestEngine {
             )
             return@withContext
         } finally {
-            activeCall = null
+            cancelAllCalls()
         }
 
-        if (!currentCoroutineContext().isActive) return@withContext
+        if (!currentCoroutineContext().isActive || activeTestId.get() != testId) return@withContext
 
         val finalDownloadSpeed = _testResult.value.downloadSpeedMbps
 
-        // Phase 3: Upload Speed
+        // Phase 3: Upload Speed (sustained with controlled concurrency = 2)
         _testResult.value = _testResult.value.copy(
             phase = SpeedTestPhase.UPLOAD,
             progress = 0.70f
         )
 
-        var totalBytesUploaded = 0L
-        val uploadStart = System.currentTimeMillis()
-        val measuredSpeeds = mutableListOf<Double>()
+        val totalBytesUploaded = AtomicLong(0L)
+        val uploadStartNano = System.nanoTime()
         val uploadUrl = "https://speed.cloudflare.com/__up"
-        val maxUploadDuration = 6000L // 6 seconds max
+        val maxUploadDurationNano = 6_000_000_000L // 6 seconds
+        val uploadChunk = ByteArray(524288) { 0x41 } // 512 KB chunk
+        val concurrency = 2
 
         try {
-            val chunk = ByteArray(262144) { 0x41 } // 256 KB chunk
-            for (i in 0 until 12) {
-                if (!currentCoroutineContext().isActive) break
-                val callStart = System.currentTimeMillis()
-                try {
-                    val reqBody = chunk.toRequestBody()
-                    val req = Request.Builder().url(uploadUrl).post(reqBody).build()
-                    val call = client.newCall(req)
-                    activeCall = call
-                    call.execute().use { resp ->
-                        if (resp.isSuccessful) {
-                            val callDuration = (System.currentTimeMillis() - callStart).coerceAtLeast(1)
-                            totalBytesUploaded += chunk.size
-                            val currentSpeed = (chunk.size * 8.0) / (callDuration * 1000.0)
-                            measuredSpeeds.add(currentSpeed)
+            coroutineScope {
+                // Reporter loop
+                val reporter = launch {
+                    while (isActive && activeTestId.get() == testId) {
+                        delay(150)
+                        val elapsedNano = (System.nanoTime() - uploadStartNano).coerceAtLeast(100_000_000L)
+                        val elapsedSec = elapsedNano / 1_000_000_000.0
+                        val currentAvgSpeed = (totalBytesUploaded.get() * 8.0) / (elapsedSec * 1_000_000.0)
+                        val progress = 0.70f + (0.28f * (elapsedNano.toFloat() / maxUploadDurationNano)).coerceAtMost(0.28f)
+                        _testResult.value = _testResult.value.copy(
+                            currentSpeedMbps = currentAvgSpeed,
+                            uploadSpeedMbps = currentAvgSpeed,
+                            progress = progress
+                        )
+                    }
+                }
+
+                // Parallel upload streams
+                val workers = (1..concurrency).map {
+                    launch {
+                        while (isActive &&
+                            activeTestId.get() == testId &&
+                            (System.nanoTime() - uploadStartNano) < maxUploadDurationNano
+                        ) {
+                            try {
+                                val reqBody = uploadChunk.toRequestBody()
+                                val req = Request.Builder().url(uploadUrl).post(reqBody).build()
+                                val call = client.newCall(req)
+                                registerCall(call)
+                                try {
+                                    call.execute().use { resp ->
+                                        if (resp.isSuccessful) {
+                                            totalBytesUploaded.addAndGet(uploadChunk.size.toLong())
+                                        }
+                                    }
+                                } finally {
+                                    unregisterCall(call)
+                                }
+                            } catch (e: CancellationException) {
+                                break
+                            } catch (_: Exception) {
+                                delay(50)
+                            }
                         }
                     }
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (_: Exception) {
-                    // individual chunk fail - continue or abort
-                } finally {
-                    activeCall = null
                 }
 
-                val totalElapsed = (System.currentTimeMillis() - uploadStart).coerceAtLeast(100)
-                val currentAvgSpeed = if (measuredSpeeds.isNotEmpty()) {
-                    (totalBytesUploaded * 8.0) / (totalElapsed * 1000.0)
-                } else {
-                    0.0
+                while (workers.any { it.isActive } && (System.nanoTime() - uploadStartNano) < maxUploadDurationNano) {
+                    delay(100)
                 }
 
-                val progress = 0.70f + (0.28f * (totalElapsed.toFloat() / maxUploadDuration)).coerceAtMost(0.28f)
-                _testResult.value = _testResult.value.copy(
-                    currentSpeedMbps = currentAvgSpeed,
-                    uploadSpeedMbps = currentAvgSpeed,
-                    progress = progress
-                )
-
-                if (totalElapsed >= maxUploadDuration) {
-                    break
-                }
+                cancelAllCalls()
+                reporter.cancel()
+                workers.forEach { it.cancel() }
             }
 
-            if (measuredSpeeds.isEmpty()) {
+            if (activeTestId.get() != testId) return@withContext
+
+            if (totalBytesUploaded.get() == 0L) {
                 throw IllegalStateException("Upload server unreachable or request failed")
             }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            if (!currentCoroutineContext().isActive) return@withContext
+            if (!currentCoroutineContext().isActive || activeTestId.get() != testId) return@withContext
             _testResult.value = _testResult.value.copy(
                 phase = SpeedTestPhase.ERROR,
                 errorMessage = "Upload test failed: ${e.localizedMessage ?: "Connection error"}",
@@ -247,17 +308,13 @@ class SpeedTestEngine {
             )
             return@withContext
         } finally {
-            activeCall = null
+            cancelAllCalls()
         }
 
-        if (!currentCoroutineContext().isActive) return@withContext
+        if (!currentCoroutineContext().isActive || activeTestId.get() != testId) return@withContext
 
-        val finalUploadElapsed = (System.currentTimeMillis() - uploadStart).coerceAtLeast(100)
-        val finalUploadSpeed = if (totalBytesUploaded > 0) {
-            (totalBytesUploaded * 8.0) / (finalUploadElapsed * 1000.0)
-        } else {
-            0.0
-        }
+        val finalUploadElapsedSec = ((System.nanoTime() - uploadStartNano).coerceAtLeast(100_000_000L)) / 1_000_000_000.0
+        val finalUploadSpeed = (totalBytesUploaded.get() * 8.0) / (finalUploadElapsedSec * 1_000_000.0)
 
         _testResult.value = _testResult.value.copy(
             phase = SpeedTestPhase.COMPLETED,
@@ -271,10 +328,8 @@ class SpeedTestEngine {
     }
 
     fun cancel() {
-        try {
-            activeCall?.cancel()
-        } catch (_: Exception) {}
-        activeCall = null
+        activeTestId.incrementAndGet()
+        cancelAllCalls()
         _testResult.value = SpeedTestResult(
             phase = SpeedTestPhase.IDLE,
             progress = 0f,

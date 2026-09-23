@@ -36,26 +36,81 @@ class NetworkHelper(private val context: Context) {
         val upstreamKbps: Int = 0
     )
 
+    private var lastConnectionInfo: ConnectionInfo? = null
+    private var lastConnectionInfoTime: Long = 0L
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    private var isCallbackRegistered: Boolean = false
+
+    fun registerNetworkCallback() {
+        if (isCallbackRegistered) return
+        val cm = connectivityManager ?: return
+        try {
+            val callback = object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: android.net.Network) {
+                    lastConnectionInfoTime = 0L
+                    lastActiveNetworkHash = 0
+                }
+                override fun onLost(network: android.net.Network) {
+                    lastConnectionInfoTime = 0L
+                    lastActiveNetworkHash = 0
+                    lastConnectionInfo = ConnectionInfo(false, false, false, "Offline")
+                }
+                override fun onCapabilitiesChanged(network: android.net.Network, capabilities: NetworkCapabilities) {
+                    lastConnectionInfoTime = 0L
+                }
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                cm.registerDefaultNetworkCallback(callback)
+            } else {
+                val request = android.net.NetworkRequest.Builder()
+                    .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                    .build()
+                cm.registerNetworkCallback(request, callback)
+            }
+            networkCallback = callback
+            isCallbackRegistered = true
+        } catch (_: Exception) {}
+    }
+
+    fun unregisterNetworkCallback() {
+        if (!isCallbackRegistered) return
+        try {
+            networkCallback?.let { connectivityManager?.unregisterNetworkCallback(it) }
+        } catch (_: Exception) {}
+        networkCallback = null
+        isCallbackRegistered = false
+    }
+
     fun getLocalIpAddress(forceRefresh: Boolean = false): String {
         val now = System.currentTimeMillis()
-        if (!forceRefresh && cachedIpAddress != "Unavailable" && (now - lastIpCheckTime) < 30000L) {
+        if (!forceRefresh && (now - lastIpCheckTime) < 30000L) {
             return cachedIpAddress
         }
+        lastIpCheckTime = now
         try {
             val interfaces = java.net.NetworkInterface.getNetworkInterfaces() ?: return cachedIpAddress
+            var fallbackIpv6: String? = null
             for (intf in interfaces) {
                 if (intf.isLoopback || !intf.isUp) continue
                 val addrs = intf.inetAddresses ?: continue
                 for (addr in addrs) {
-                    if (!addr.isLoopbackAddress && addr is java.net.Inet4Address) {
+                    if (!addr.isLoopbackAddress) {
                         val host = addr.hostAddress ?: continue
-                        cachedIpAddress = host
-                        lastIpCheckTime = now
-                        return host
+                        if (addr is java.net.Inet4Address) {
+                            cachedIpAddress = host
+                            return host
+                        } else if (addr is java.net.Inet6Address && fallbackIpv6 == null) {
+                            fallbackIpv6 = host.split("%").firstOrNull() ?: host
+                        }
                     }
                 }
             }
+            if (fallbackIpv6 != null) {
+                cachedIpAddress = fallbackIpv6
+                return fallbackIpv6
+            }
         } catch (_: Exception) {}
+        cachedIpAddress = "Unavailable"
         return cachedIpAddress
     }
 
@@ -67,6 +122,12 @@ class NetworkHelper(private val context: Context) {
 
         val currentNetworkHash = activeNetwork.hashCode()
         val networkChanged = currentNetworkHash != lastActiveNetworkHash
+        val now = System.currentTimeMillis()
+
+        if (!networkChanged && lastConnectionInfo != null && (now - lastConnectionInfoTime) < 2000L) {
+            return lastConnectionInfo!!
+        }
+
         if (networkChanged) {
             lastActiveNetworkHash = currentNetworkHash
             cachedCarrierName = null
@@ -113,7 +174,6 @@ class NetworkHelper(private val context: Context) {
                 }
             }
             isMobile -> {
-                val now = System.currentTimeMillis()
                 if (cachedCarrierName != null && !networkChanged && (now - lastCarrierCheckTime) < 15000L) {
                     cachedCarrierName!!
                 } else {
@@ -139,7 +199,7 @@ class NetworkHelper(private val context: Context) {
             }
         } else 0
 
-        return ConnectionInfo(
+        val info = ConnectionInfo(
             isConnected = true,
             isWifi = isWifi,
             isMobile = isMobile,
@@ -149,6 +209,9 @@ class NetworkHelper(private val context: Context) {
             downstreamKbps = capabilities.linkDownstreamBandwidthKbps,
             upstreamKbps = capabilities.linkUpstreamBandwidthKbps
         )
+        lastConnectionInfo = info
+        lastConnectionInfoTime = now
+        return info
     }
 
     private fun getMobileCarrierName(): String {

@@ -80,12 +80,18 @@ class SpeedMeterViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun refreshHistory() {
-        _historyList.value = repository.getUsageHistory()
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            val list = repository.getUsageHistory()
+            _historyList.value = list
+        }
     }
 
     fun clearHistory() {
-        repository.clearHistory()
-        refreshHistory()
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            repository.clearHistory()
+            val list = repository.getUsageHistory()
+            _historyList.value = list
+        }
     }
 
     fun toggleService() {
