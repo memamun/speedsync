@@ -1,7 +1,7 @@
 # SpeedSync — Internet Speed Meter ⚡
 
 [![Website](https://img.shields.io/badge/Website-Showcase-00e5ff?style=flat)](https://memamun.github.io/speedsync/)
-[![Download APK](https://img.shields.io/badge/Download-APK%20v1.1.5-success?style=for-the-badge&logo=android)](https://github.com/memamun/speedsync/releases/latest)
+[![Download APK](https://img.shields.io/badge/Download-APK%20v1.1.6-success?style=for-the-badge&logo=android)](https://github.com/memamun/speedsync/releases/latest)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg?style=flat)](LICENSE)
 [![Android](https://img.shields.io/badge/Platform-Android-3DDC84.svg?style=flat&logo=android)](https://www.android.com)
 [![Kotlin](https://img.shields.io/badge/Language-Kotlin%202.x-7F52FF.svg?style=flat&logo=kotlin)](https://kotlinlang.org)
@@ -11,7 +11,7 @@
 
 A high-performance, battery-efficient real-time internet speed meter and network data monitor for Android, built with modern Jetpack Compose, Material 3 Expressive, and Kotlin Coroutines.
 
-> 📲 **Instant Install**: Download the ready-to-run [SpeedSync_v1.1.5_Release.apk](https://github.com/memamun/speedsync/releases/latest) directly onto your Android device.
+> 📲 **Instant Install**: Download the ready-to-run [SpeedSync_v1.1.6_Release.apk](https://github.com/memamun/speedsync/releases/latest) directly onto your Android device.
 
 ---
 
@@ -21,26 +21,31 @@ A high-performance, battery-efficient real-time internet speed meter and network
   - Displays real-time download and upload speeds directly in the Android status bar.
   - Pixel-perfect typography and sizing calibrated to match classic speed meter utilities.
   - Uses 1,290+ pre-rendered hdpi bitmaps (0–999 KB/s, 1.0–29.1 MB/s) with a dynamic canvas generator fallback using *Liberation Sans Bold*.
+  - Explicit resource shrinking protection via `res/raw/keep.xml` preserving all dynamic drawables and font assets in release builds.
   - Leftmost status bar placement using `PRIORITY_MAX`, alphabetical sort keys, and prioritized timestamps.
 
 - **Intelligent Battery & Resource Conservation**:
-  - **Smart IPC Deduplication**: Throttles notification updates to a 5-second heartbeat when idle or when network throughput is 0 B/s, slashing Binder IPC transactions to `system_server` by over 80%.
-  - **Screen-Off State Throttling**: Monitors screen state via broadcast receiver, gracefully releasing wake locks and slowing polling to 8 seconds when the screen is off.
-  - **Storage Hygiene**: Automatically prunes daily historical metrics older than 60 days to prevent unbounded `SharedPreferences` growth.
+  - **Display-Based Visual Deduplication**: Compares formatted notification title, body, expanded text, and active icon identifier; completely eliminates redundant notification dispatches when visual metrics remain unchanged without arbitrary wakeups.
+  - **Screen-Off Quiescence**: Stops 1-second sampling loops immediately when the screen turns off. Sleep traffic delta is reconciled upon wake, avoiding battery drain during sleep.
+  - **Sequential Lifecycle Channel**: Processes screen-on, screen-off, start, and stop events in strict FIFO order through an unbounded actor channel to prevent race conditions.
+  - **Callback-Driven Connectivity Caching**: Leverages `ConnectivityManager.NetworkCallback` to cache active network metadata and bandwidth, eliminating per-second binder IPC capability queries.
+  - **Storage Architecture**: In-memory metric accumulation with periodic 15-second background flushes and lifecycle flushes (`ScreenOff`, `Stop`) to prevent flash storage wear, maintaining a 30-day historical usage record.
 
 - **Modern Jetpack Compose Material 3 UI**:
   - Edge-to-edge layout with full dynamic system bar contrast adaptation for Light and Dark themes.
-  - Smooth animated speedometer gauge with live download/upload activity indicators.
+  - Smooth animated speedometer gauge optimized with `derivedStateOf` to eliminate redundant recompositions.
   - 2×2 diagnostic metric cards displaying upload speed, ping, jitter, and packet loss.
 
-- **Integrated Network Speed Test**:
-  - Multi-phase network diagnostic suite (Ping latency, Jitter, Packet Loss, Download throughput, and Upload throughput).
-  - **Cooperative Cancellation**: Instantly abort in-flight network streams with responsive UI state reset.
+- **Hardened Network Speed Test**:
+  - Multi-phase diagnostic suite (Ping latency, Jitter, Packet Loss, Download throughput, and Upload throughput).
+  - **Sustained Streaming**: Sustained transfer loops with bounded concurrency (`concurrency = 2`) over 512 KB chunks and 50 MB download streams.
+  - **Enforced Phase Deadlines**: Actively aborts in-flight socket requests upon deadline expiry or user cancellation.
+  - **Session Isolation**: Each test runs with an independent `TestSession`, cancellation scope, and request registry, preventing superseded runs from modifying state.
+  - **Monotonic Calculations**: Uses monotonic nanosecond timing (`System.nanoTime()`) for all throughput math, immune to system clock shifts or NTP syncs.
 
-- **Traffic Tracking & History**:
-  - Separates Wi-Fi vs Cellular data metrics automatically based on the active network transport.
-  - In-memory metric accumulation with 15-second disk flush intervals to eliminate flash storage wear.
-  - 30-day historical usage view.
+- **Accurate Traffic Accounting**:
+  - Accounts for accumulated Wi-Fi and Cellular data metrics independently of whichever transport is active at the moment of wake or sampling.
+  - **Proportional Sleep Attribution**: Unobserved sleep delta spanning one or more calendar midnights is distributed proportionally across each crossed calendar day based on elapsed duration, mathematically preserving 100% of total bytes down to the last byte.
 
 - **Hardened System Lifecycle**:
   - Foreground Service with `dataSync` service type compliant with Android 14+ (API 34/35/36).
@@ -56,9 +61,9 @@ A high-performance, battery-efficient real-time internet speed meter and network
 
 - **UI Framework**: Jetpack Compose (BOM), Material 3 Design
 - **Language**: Kotlin 2.x
-- **Concurrency & Reactivity**: Kotlin Coroutines, StateFlow (`collectAsStateWithLifecycle`)
-- **Networking**: OkHttp 4, Android `TrafficStats`, `ConnectivityManager`
-- **Testing**: JUnit 4, Robolectric, Roborazzi Screenshot Testing
+- **Concurrency & Reactivity**: Kotlin Coroutines, StateFlow (`collectAsStateWithLifecycle`), Channels
+- **Networking**: OkHttp 4, Android `TrafficStats`, `ConnectivityManager` event callbacks
+- **Testing**: JUnit 4, Robolectric, Kotlin Coroutines Test, Roborazzi Screenshot Testing (34 unit & integration test cases)
 
 ---
 
@@ -93,11 +98,11 @@ cd speedsync
 # Run unit tests
 ./gradlew testDebugUnitTest
 
-# Assemble debug APK
-./gradlew assembleDebug
+# Assemble release APK and App Bundle
+./gradlew assembleRelease bundleRelease
 ```
 
-The compiled APK will be located at `app/build/outputs/apk/debug/app-debug.apk`.
+The compiled APK will be located at `app/build/outputs/apk/release/app-release.apk`.
 
 ---
 

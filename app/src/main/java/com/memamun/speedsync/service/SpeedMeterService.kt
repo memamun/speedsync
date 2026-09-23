@@ -241,19 +241,9 @@ class SpeedMeterService : Service() {
             val totalDelta = rxDelta + txDelta
 
             if (totalDelta > 0L) {
-                val connInfo = networkHelper.getConnectionInfo()
-                val wifiDelta: Long
-                val mobileDelta: Long
-                if (connInfo.isWifi) {
-                    wifiDelta = (totalDelta - totalMobileDelta).coerceAtLeast(0L)
-                    mobileDelta = totalMobileDelta.coerceAtLeast(0L)
-                } else if (connInfo.isMobile) {
-                    wifiDelta = 0L
-                    mobileDelta = totalMobileDelta.coerceAtLeast(0L)
-                } else {
-                    mobileDelta = totalMobileDelta.coerceAtLeast(0L)
-                    wifiDelta = (totalDelta - totalMobileDelta).coerceAtLeast(0L)
-                }
+                // Account for accumulated traffic independently of connection active at wake
+                val mobileDelta = totalMobileDelta.coerceAtLeast(0L)
+                val wifiDelta = (totalDelta - totalMobileDelta).coerceAtLeast(0L)
 
                 attributeSleepTraffic(wifiDelta, mobileDelta, lastTimestamp, now)
             }
@@ -266,39 +256,77 @@ class SpeedMeterService : Service() {
         lastTimestamp = now
     }
 
-    private fun attributeSleepTraffic(wifiDelta: Long, mobileDelta: Long, sleepStart: Long, wakeTime: Long) {
-        if (sleepStart <= 0L || wakeTime <= sleepStart) {
+    internal data class DaySlice(
+        val durationMs: Long,
+        val midpointTimestamp: Long
+    )
+
+    internal fun calculateDaySlices(startTime: Long, endTime: Long): List<DaySlice> {
+        val slices = mutableListOf<DaySlice>()
+        val cal = java.util.Calendar.getInstance()
+
+        var currentStart = startTime
+        while (currentStart < endTime) {
+            cal.timeInMillis = currentStart
+            cal.set(java.util.Calendar.HOUR_OF_DAY, 0)
+            cal.set(java.util.Calendar.MINUTE, 0)
+            cal.set(java.util.Calendar.SECOND, 0)
+            cal.set(java.util.Calendar.MILLISECOND, 0)
+            cal.add(java.util.Calendar.DAY_OF_YEAR, 1)
+            val nextMidnight = cal.timeInMillis
+
+            val sliceEnd = minOf(nextMidnight, endTime)
+            val duration = sliceEnd - currentStart
+            if (duration > 0L) {
+                slices.add(DaySlice(duration, currentStart + duration / 2))
+            }
+            currentStart = sliceEnd
+        }
+        return slices
+    }
+
+    /**
+     * Attributes unobserved traffic accumulated during sleep.
+     *
+     * Note on midnight attribution:
+     * TrafficStats cumulative hardware counters do not record individual packet timestamps
+     * while the device CPU is in deep sleep. Therefore, when sleep spans one or more calendar
+     * midnight boundaries, attribution across days is an estimate calculated by distributing
+     * the total unobserved delta proportionally across each calendar day according to the
+     * duration of sleep elapsed within that day, while strictly preserving total bytes.
+     */
+    internal fun attributeSleepTraffic(wifiDelta: Long, mobileDelta: Long, sleepStart: Long, wakeTime: Long) {
+        if (sleepStart <= 0L || wakeTime <= sleepStart || (wifiDelta <= 0L && mobileDelta <= 0L)) {
+            dataRepo.addUsage(wifiDelta.coerceAtLeast(0L), mobileDelta.coerceAtLeast(0L))
+            return
+        }
+
+        val slices = calculateDaySlices(sleepStart, wakeTime)
+        if (slices.size <= 1) {
             dataRepo.addUsage(wifiDelta, mobileDelta)
             return
         }
 
-        val cal = java.util.Calendar.getInstance()
-        cal.timeInMillis = wakeTime
-        cal.set(java.util.Calendar.HOUR_OF_DAY, 0)
-        cal.set(java.util.Calendar.MINUTE, 0)
-        cal.set(java.util.Calendar.SECOND, 0)
-        cal.set(java.util.Calendar.MILLISECOND, 0)
-        val todayMidnight = cal.timeInMillis
+        val totalDuration = (wakeTime - sleepStart).toDouble()
+        var remainingWifi = wifiDelta
+        var remainingMobile = mobileDelta
 
-        // If sleep started before today's midnight and woke up after midnight, split proportionally by sleep duration
-        if (sleepStart < todayMidnight && wakeTime >= todayMidnight) {
-            val totalSleepDuration = (wakeTime - sleepStart).toDouble()
-            val preMidnightDuration = (todayMidnight - sleepStart).toDouble()
-            val ratio = (preMidnightDuration / totalSleepDuration).coerceIn(0.0, 1.0)
+        for (i in 0 until slices.size - 1) {
+            val slice = slices[i]
+            val ratio = slice.durationMs / totalDuration
+            val sliceWifi = (wifiDelta * ratio).toLong().coerceAtMost(remainingWifi)
+            val sliceMobile = (mobileDelta * ratio).toLong().coerceAtMost(remainingMobile)
 
-            val preWifi = (wifiDelta * ratio).toLong()
-            val preMobile = (mobileDelta * ratio).toLong()
-            val postWifi = wifiDelta - preWifi
-            val postMobile = mobileDelta - preMobile
-
-            if (preWifi > 0L || preMobile > 0L) {
-                dataRepo.addUsageAtTimestamp(preWifi, preMobile, sleepStart)
+            if (sliceWifi > 0L || sliceMobile > 0L) {
+                dataRepo.addUsageAtTimestamp(sliceWifi, sliceMobile, slice.midpointTimestamp)
             }
-            if (postWifi > 0L || postMobile > 0L) {
-                dataRepo.addUsageAtTimestamp(postWifi, postMobile, wakeTime)
-            }
-        } else {
-            dataRepo.addUsage(wifiDelta, mobileDelta)
+            remainingWifi -= sliceWifi
+            remainingMobile -= sliceMobile
+        }
+
+        // Attribute all remaining bytes to the final slice (wake day) to guarantee 100% byte preservation
+        if (remainingWifi > 0L || remainingMobile > 0L) {
+            dataRepo.addUsageAtTimestamp(remainingWifi, remainingMobile, wakeTime)
         }
     }
 
@@ -343,19 +371,9 @@ class SpeedMeterService : Service() {
 
         val connInfo = networkHelper.getConnectionInfo()
 
-        // Attribute network traffic strictly according to the active transport interface
-        val wifiDelta: Long
-        val mobileDelta: Long
-        if (connInfo.isWifi) {
-            wifiDelta = (totalDelta - totalMobileDelta).coerceAtLeast(0L)
-            mobileDelta = totalMobileDelta.coerceAtLeast(0L)
-        } else if (connInfo.isMobile) {
-            wifiDelta = 0L
-            mobileDelta = totalMobileDelta.coerceAtLeast(0L)
-        } else {
-            mobileDelta = totalMobileDelta.coerceAtLeast(0L)
-            wifiDelta = (totalDelta - totalMobileDelta).coerceAtLeast(0L)
-        }
+        // Attribute network traffic independently of active connection at sampling time
+        val mobileDelta = totalMobileDelta.coerceAtLeast(0L)
+        val wifiDelta = (totalDelta - totalMobileDelta).coerceAtLeast(0L)
 
         // Update repository usage
         dataRepo.addUsage(wifiDelta, mobileDelta)

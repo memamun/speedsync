@@ -2,6 +2,7 @@ package com.memamun.speedsync.network
 
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -62,5 +63,28 @@ class NetworkHelperTest {
         assertFalse(networkHelper.isValidCarrierName("sim 1"))
         assertFalse(networkHelper.isValidCarrierName("sim 2"))
         assertFalse(networkHelper.isValidCarrierName("searching"))
+    }
+
+    @Test
+    fun testCacheInvalidation_onNetworkLost_updatesToOffline() {
+        networkHelper.registerNetworkCallback()
+        try {
+            networkHelper.updateConnectionMetadata(null, null)
+            val info = networkHelper.getConnectionInfo()
+            assertFalse(info.isConnected)
+            assertFalse(info.isWifi)
+            assertFalse(info.isMobile)
+            assertEquals("Offline", info.networkName)
+        } finally {
+            networkHelper.unregisterNetworkCallback()
+        }
+    }
+
+    @Test
+    fun testRegisterAndUnregisterNetworkCallback_doesNotCrash() {
+        networkHelper.registerNetworkCallback()
+        val info = networkHelper.getConnectionInfo()
+        org.junit.Assert.assertNotNull(info)
+        networkHelper.unregisterNetworkCallback()
     }
 }
