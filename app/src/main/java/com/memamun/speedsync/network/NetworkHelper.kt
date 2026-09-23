@@ -6,6 +6,7 @@ import android.net.NetworkCapabilities
 import android.net.wifi.WifiInfo
 import android.net.wifi.WifiManager
 import android.os.Build
+import android.telephony.CarrierConfigManager
 import android.telephony.SubscriptionManager
 import android.telephony.TelephonyManager
 import java.util.Locale
@@ -16,7 +17,6 @@ class NetworkHelper(private val context: Context) {
 
     companion object {
         private var cachedWifiSsid: String? = null
-        private var cachedCarrierName: String? = null
     }
 
     data class ConnectionInfo(
@@ -130,7 +130,8 @@ class NetworkHelper(private val context: Context) {
                 -1
             }
 
-            // 1. Try SubscriptionManager for the active data SIM (prioritizing SIM card carrier / display name)
+            // 1. Dynamic check via SubscriptionManager for the active data SIM
+            //    (queries the live user/SIM display name and carrier name from OS settings)
             if (subscriptionManager != null) {
                 try {
                     val subInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && dataSubId != SubscriptionManager.INVALID_SUBSCRIPTION_ID) {
@@ -138,18 +139,16 @@ class NetworkHelper(private val context: Context) {
                     } else {
                         subscriptionManager.activeSubscriptionInfoList?.firstOrNull()
                     }
-                    val carrierName = subInfo?.carrierName?.toString()
-                    if (isValidCarrierName(carrierName)) {
-                        cachedCarrierName = carrierName!!.trim()
-                        return cachedCarrierName!!
-                    }
                     val displayName = subInfo?.displayName?.toString()
                     if (isValidCarrierName(displayName)) {
-                        cachedCarrierName = displayName!!.trim()
-                        return cachedCarrierName!!
+                        return displayName!!.trim()
+                    }
+                    val carrierName = subInfo?.carrierName?.toString()
+                    if (isValidCarrierName(carrierName)) {
+                        return carrierName!!.trim()
                     }
                 } catch (_: SecurityException) {
-                    // Handled safely without requiring dangerous runtime permissions
+                    // Safe fallback if runtime phone permission is not granted
                 } catch (_: Exception) {}
             }
 
@@ -168,46 +167,53 @@ class NetworkHelper(private val context: Context) {
 
             val managers = listOfNotNull(activeTm, telephonyManager).distinct()
 
-            // 3. Inspect SIM-specific identity:
-            //    simCarrierIdName (from Android CarrierConfig DB) & simOperatorName (SPN from SIM card).
-            //    These correctly report the SIM brand for MVNOs and RAN sharing (e.g. Airtel using Robi towers, Mint on T-Mobile, etc.)
+            // 3. Dynamic Service Provider Name (SPN) directly from the SIM card (EF_SPN).
+            //    This is broadcast/written dynamically on the SIM card by the operator (e.g. cirkle).
             for (tm in managers) {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                    val carrierIdName = tm.simCarrierIdName?.toString()
-                    if (isValidCarrierName(carrierIdName)) {
-                        cachedCarrierName = carrierIdName!!.trim()
-                        return cachedCarrierName!!
-                    }
-                }
-
                 val simOpName = tm.simOperatorName
                 if (isValidCarrierName(simOpName)) {
-                    cachedCarrierName = simOpName!!.trim()
-                    return cachedCarrierName!!
+                    return simOpName!!.trim()
                 }
             }
 
-            // 4. Fallback to registered network operator name (cell tower operator)
+            // 4. Dynamic Registered Network Operator Name from the connected cell tower (EONS / NITZ).
+            //    This is received live over the air from the active cellular tower.
             for (tm in managers) {
                 val netOpName = tm.networkOperatorName
                 if (isValidCarrierName(netOpName)) {
-                    cachedCarrierName = netOpName!!.trim()
-                    return cachedCarrierName!!
+                    return netOpName!!.trim()
                 }
             }
 
-            // 5. Fallback to numeric PLMN mapping (if operator returns MCC+MNC code)
-            for (tm in managers) {
-                val plmn = tm.simOperator ?: tm.networkOperator
-                val resolved = resolvePlmn(plmn)
-                if (resolved != null) {
-                    cachedCarrierName = resolved
-                    return resolved
+            // 5. Dynamic CarrierConfigManager lookup for the active subscription
+            try {
+                val carrierConfig = context.getSystemService(Context.CARRIER_CONFIG_SERVICE) as? CarrierConfigManager
+                val config = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && dataSubId != SubscriptionManager.INVALID_SUBSCRIPTION_ID) {
+                    carrierConfig?.getConfigForSubId(dataSubId)
+                } else {
+                    carrierConfig?.config
                 }
+                val configCarrierName = config?.getString(CarrierConfigManager.KEY_CARRIER_NAME_STRING)
+                if (isValidCarrierName(configCarrierName)) {
+                    return configCarrierName!!.trim()
+                }
+            } catch (_: Exception) {}
+
+            // 6. Dynamic ServiceState operator alpha name (if accessible over radio layer)
+            for (tm in managers) {
+                try {
+                    val serviceState = tm.serviceState
+                    val opName = serviceState?.operatorAlphaLong ?: serviceState?.operatorAlphaShort
+                    if (isValidCarrierName(opName)) {
+                        return opName!!.trim()
+                    }
+                } catch (_: SecurityException) {
+                } catch (_: Exception) {}
             }
         } catch (_: Exception) {}
 
-        return cachedCarrierName ?: "Mobile Data"
+        // Fallback to clean, non-misleading generic cellular without any static hardcoded assumptions
+        return "Cellular"
     }
 
     internal fun isValidCarrierName(name: String?): Boolean {
@@ -222,6 +228,8 @@ class NetworkHelper(private val context: Context) {
             "null",
             "android",
             "carrier",
+            "cellular",
+            "mobile data",
             "no service",
             "emergency calls only",
             "sim",
@@ -233,27 +241,5 @@ class NetworkHelper(private val context: Context) {
             "none"
         )
         return !genericPlaceholders.contains(lower)
-    }
-
-    internal fun resolvePlmn(plmn: String?): String? {
-        if (plmn.isNullOrBlank()) return null
-        return when (plmn.trim()) {
-            "47001" -> "Grameenphone"
-            "47002" -> "Robi"
-            "47003" -> "Banglalink"
-            "47004" -> "Teletalk"
-            "47007" -> "Airtel"
-            "40445", "405854", "405855" -> "Airtel"
-            "405840", "405857", "405861", "405872" -> "Jio"
-            "40401", "40411", "40420" -> "Vodafone Idea"
-            "310260", "310160", "310200" -> "T-Mobile"
-            "310410", "310280", "310030" -> "AT&T"
-            "311480", "310012" -> "Verizon"
-            "23410" -> "O2"
-            "23415" -> "Vodafone"
-            "23420" -> "Three"
-            "23430" -> "EE"
-            else -> null
-        }
     }
 }

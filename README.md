@@ -1,7 +1,7 @@
 # SpeedSync — Internet Speed Meter ⚡
 
 [![Website](https://img.shields.io/badge/Website-Showcase-00e5ff?style=flat)](https://memamun.github.io/speedsync/)
-[![Download APK](https://img.shields.io/badge/Download-APK%20v1.1.2-success?style=for-the-badge&logo=android)](https://github.com/memamun/speedsync/releases/latest)
+[![Download APK](https://img.shields.io/badge/Download-APK%20v1.1.3-success?style=for-the-badge&logo=android)](https://github.com/memamun/speedsync/releases/latest)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg?style=flat)](LICENSE)
 [![Android](https://img.shields.io/badge/Platform-Android-3DDC84.svg?style=flat&logo=android)](https://www.android.com)
 [![Kotlin](https://img.shields.io/badge/Language-Kotlin%202.x-7F52FF.svg?style=flat&logo=kotlin)](https://kotlinlang.org)
@@ -11,7 +11,7 @@
 
 A high-performance, battery-efficient real-time internet speed meter and network data monitor for Android, built with modern Jetpack Compose, Material 3 Expressive, and Kotlin Coroutines.
 
-> 📲 **Instant Install**: Download the ready-to-run [SpeedSync_v1.1.2_Release.apk](https://github.com/memamun/speedsync/releases/latest) directly onto your Android device.
+> 📲 **Instant Install**: Download the ready-to-run [SpeedSync_v1.1.3_Release.apk](https://github.com/memamun/speedsync/releases/latest) directly onto your Android device.
 
 ---
 
