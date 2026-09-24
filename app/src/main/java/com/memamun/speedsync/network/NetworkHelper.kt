@@ -1,6 +1,8 @@
 package com.memamun.speedsync.network
 
+import android.annotation.SuppressLint
 import android.content.Context
+import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.wifi.WifiInfo
@@ -9,6 +11,7 @@ import android.os.Build
 import android.telephony.CarrierConfigManager
 import android.telephony.SubscriptionManager
 import android.telephony.TelephonyManager
+import androidx.core.content.ContextCompat
 import java.util.Locale
 
 class NetworkHelper(private val context: Context) {
@@ -65,14 +68,7 @@ class NetworkHelper(private val context: Context) {
                     updateConnectionMetadata(network, capabilities)
                 }
             }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                cm.registerDefaultNetworkCallback(callback)
-            } else {
-                val request = android.net.NetworkRequest.Builder()
-                    .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                    .build()
-                cm.registerNetworkCallback(request, callback)
-            }
+            cm.registerDefaultNetworkCallback(callback)
             networkCallback = callback
             isCallbackRegistered = true
 
@@ -175,11 +171,7 @@ class NetworkHelper(private val context: Context) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 (capabilities.transportInfo as? WifiInfo)?.linkSpeed ?: 0
             } else {
-                try {
-                    @Suppress("DEPRECATION")
-                    val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
-                    wifiManager?.connectionInfo?.linkSpeed ?: 0
-                } catch (_: Exception) { 0 }
+                getLegacyWifiLinkSpeed()
             }
         } else 0
 
@@ -239,22 +231,34 @@ class NetworkHelper(private val context: Context) {
         return cachedConnectionInfo
     }
 
+    private fun hasPhoneStatePermission(): Boolean {
+        return ContextCompat.checkSelfPermission(
+            context,
+            android.Manifest.permission.READ_PHONE_STATE
+        ) == PackageManager.PERMISSION_GRANTED
+    }
+
+    @Suppress("DEPRECATION")
+    private fun getLegacyWifiLinkSpeed(): Int {
+        return try {
+            val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+            wifiManager?.connectionInfo?.linkSpeed ?: 0
+        } catch (_: Exception) { 0 }
+    }
+
     private fun getMobileCarrierName(): String {
         try {
             val telephonyManager = context.getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager
             val subscriptionManager = context.getSystemService(Context.TELEPHONY_SUBSCRIPTION_SERVICE) as? SubscriptionManager
 
-            val dataSubId = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                SubscriptionManager.getDefaultDataSubscriptionId()
-            } else {
-                -1
-            }
+            val dataSubId = SubscriptionManager.getDefaultDataSubscriptionId()
 
             // 1. Dynamic check via SubscriptionManager for the active data SIM
             //    (queries the live user/SIM display name and carrier name from OS settings)
-            if (subscriptionManager != null) {
+            if (subscriptionManager != null && hasPhoneStatePermission()) {
                 try {
-                    val subInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && dataSubId != SubscriptionManager.INVALID_SUBSCRIPTION_ID) {
+                    @SuppressLint("MissingPermission")
+                    val subInfo = if (dataSubId != SubscriptionManager.INVALID_SUBSCRIPTION_ID) {
                         subscriptionManager.getActiveSubscriptionInfo(dataSubId)
                     } else {
                         subscriptionManager.activeSubscriptionInfoList?.firstOrNull()
@@ -273,9 +277,7 @@ class NetworkHelper(private val context: Context) {
             }
 
             // 2. Obtain TelephonyManager scoped specifically to the active data subscription (crucial for Dual SIM)
-            val activeTm = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N &&
-                dataSubId != SubscriptionManager.INVALID_SUBSCRIPTION_ID &&
-                telephonyManager != null) {
+            val activeTm = if (dataSubId != SubscriptionManager.INVALID_SUBSCRIPTION_ID && telephonyManager != null) {
                 try {
                     telephonyManager.createForSubscriptionId(dataSubId)
                 } catch (_: Exception) {
@@ -288,7 +290,7 @@ class NetworkHelper(private val context: Context) {
             val managers = listOfNotNull(activeTm, telephonyManager).distinct()
 
             // 3. Dynamic Service Provider Name (SPN) directly from the SIM card (EF_SPN).
-            //    This is broadcast/written dynamically on the SIM card by the operator (e.g. cirkle).
+            //    This is broadcast/written dynamically on the SIM card by the operator.
             for (tm in managers) {
                 val simOpName = tm.simOperatorName
                 if (isValidCarrierName(simOpName)) {
@@ -306,29 +308,40 @@ class NetworkHelper(private val context: Context) {
             }
 
             // 5. Dynamic CarrierConfigManager lookup for the active subscription
-            try {
-                val carrierConfig = context.getSystemService(Context.CARRIER_CONFIG_SERVICE) as? CarrierConfigManager
-                val config = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && dataSubId != SubscriptionManager.INVALID_SUBSCRIPTION_ID) {
-                    carrierConfig?.getConfigForSubId(dataSubId)
-                } else {
-                    carrierConfig?.config
-                }
-                val configCarrierName = config?.getString(CarrierConfigManager.KEY_CARRIER_NAME_STRING)
-                if (isValidCarrierName(configCarrierName)) {
-                    return configCarrierName!!.trim()
-                }
-            } catch (_: Exception) {}
+            if (hasPhoneStatePermission()) {
+                try {
+                    val carrierConfig = context.getSystemService(Context.CARRIER_CONFIG_SERVICE) as? CarrierConfigManager
+                    @SuppressLint("MissingPermission")
+                    @Suppress("DEPRECATION")
+                    val config = if (dataSubId != SubscriptionManager.INVALID_SUBSCRIPTION_ID) {
+                        carrierConfig?.getConfigForSubId(dataSubId)
+                    } else {
+                        carrierConfig?.config
+                    }
+                    val configCarrierName = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                        config?.getString(CarrierConfigManager.KEY_CARRIER_NAME_STRING)
+                    } else {
+                        config?.getString("carrier_name_string")
+                    }
+                    if (isValidCarrierName(configCarrierName)) {
+                        return configCarrierName!!.trim()
+                    }
+                } catch (_: Exception) {}
+            }
 
             // 6. Dynamic ServiceState operator alpha name (if accessible over radio layer)
-            for (tm in managers) {
-                try {
-                    val serviceState = tm.serviceState
-                    val opName = serviceState?.operatorAlphaLong ?: serviceState?.operatorAlphaShort
-                    if (isValidCarrierName(opName)) {
-                        return opName!!.trim()
-                    }
-                } catch (_: SecurityException) {
-                } catch (_: Exception) {}
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && hasPhoneStatePermission()) {
+                for (tm in managers) {
+                    try {
+                        @SuppressLint("MissingPermission")
+                        val serviceState = tm.serviceState
+                        val opName = serviceState?.operatorAlphaLong ?: serviceState?.operatorAlphaShort
+                        if (isValidCarrierName(opName)) {
+                            return opName!!.trim()
+                        }
+                    } catch (_: SecurityException) {
+                    } catch (_: Exception) {}
+                }
             }
         } catch (_: Exception) {}
 

@@ -15,7 +15,9 @@ class BootReceiver : BroadcastReceiver() {
         ) {
             val repo = DataUsageRepository.getInstance(context)
             if (repo.isServiceEnabled() && repo.isStartOnBoot()) {
-                SpeedMeterService.start(context)
+                try {
+                    SpeedMeterService.start(context)
+                } catch (_: Exception) {}
             }
         }
     }

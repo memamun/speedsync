@@ -46,7 +46,6 @@ fun SpeedGauge(
 
     val trackColor = MaterialTheme.colorScheme.surfaceVariant
     val primaryColor = MaterialTheme.colorScheme.primary
-    val secondaryColor = MaterialTheme.colorScheme.secondary
     val textColor = MaterialTheme.colorScheme.onBackground
 
     val gaugeDescription = "Current speed $speedValue $speedUnitLabel"

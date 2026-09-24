@@ -64,7 +64,7 @@ class DataUsageRepository(context: Context) {
                 cachedWifi = prefs.getLong("${KEY_WIFI_PREFIX}_$newToday", 0L)
                 cachedMobile = prefs.getLong("${KEY_MOBILE_PREFIX}_$newToday", 0L)
                 if (prefs.getString(KEY_CURRENT_DATE, "").isNullOrEmpty()) {
-                    prefs.edit().putString(KEY_CURRENT_DATE, newToday).apply()
+                    prefs.edit { putString(KEY_CURRENT_DATE, newToday) }
                 }
             } else if (newToday != cachedToday) {
                 // Day rollover! Flush previous day data first under the previous cachedToday AND commit it to history immediately
@@ -74,7 +74,7 @@ class DataUsageRepository(context: Context) {
                 nextMidnightEpochMs = calculateNextMidnightEpochMs(now)
                 cachedWifi = prefs.getLong("${KEY_WIFI_PREFIX}_$newToday", 0L)
                 cachedMobile = prefs.getLong("${KEY_MOBILE_PREFIX}_$newToday", 0L)
-                prefs.edit().putString(KEY_CURRENT_DATE, newToday).apply()
+                prefs.edit { putString(KEY_CURRENT_DATE, newToday) }
             } else {
                 nextMidnightEpochMs = calculateNextMidnightEpochMs(now)
             }
@@ -84,22 +84,22 @@ class DataUsageRepository(context: Context) {
     private fun recordDayToHistory(day: String, wifi: Long, mobile: Long) {
         val pastDays = getHistoryDates().toMutableSet()
         pastDays.add(day)
-        val editor = prefs.edit()
-        editor.putLong("${KEY_WIFI_PREFIX}_$day", wifi)
-        editor.putLong("${KEY_MOBILE_PREFIX}_$day", mobile)
-        if (pastDays.size > MAX_HISTORY_DAYS) {
-            val sorted = pastDays.toList().sortedDescending()
-            val toKeep = sorted.take(MAX_HISTORY_DAYS).toSet()
-            val toRemove = sorted.drop(MAX_HISTORY_DAYS)
-            for (oldDate in toRemove) {
-                editor.remove("${KEY_WIFI_PREFIX}_$oldDate")
-                editor.remove("${KEY_MOBILE_PREFIX}_$oldDate")
+        prefs.edit {
+            putLong("${KEY_WIFI_PREFIX}_$day", wifi)
+            putLong("${KEY_MOBILE_PREFIX}_$day", mobile)
+            if (pastDays.size > MAX_HISTORY_DAYS) {
+                val sorted = pastDays.toList().sortedDescending()
+                val toKeep = sorted.take(MAX_HISTORY_DAYS).toSet()
+                val toRemove = sorted.drop(MAX_HISTORY_DAYS)
+                for (oldDate in toRemove) {
+                    remove("${KEY_WIFI_PREFIX}_$oldDate")
+                    remove("${KEY_MOBILE_PREFIX}_$oldDate")
+                }
+                putStringSet(KEY_HISTORY_DATES, toKeep)
+            } else {
+                putStringSet(KEY_HISTORY_DATES, pastDays)
             }
-            editor.putStringSet(KEY_HISTORY_DATES, toKeep)
-        } else {
-            editor.putStringSet(KEY_HISTORY_DATES, pastDays)
         }
-        editor.apply()
     }
 
     fun addUsageAtTimestamp(wifiDelta: Long, mobileDelta: Long, timestamp: Long) {
@@ -216,13 +216,13 @@ class DataUsageRepository(context: Context) {
             val sorted = pastDays.toList().sortedDescending()
             val toKeep = sorted.take(MAX_HISTORY_DAYS).toSet()
             val toRemove = sorted.drop(MAX_HISTORY_DAYS)
-            val editor = prefs.edit()
-            for (oldDate in toRemove) {
-                editor.remove("${KEY_WIFI_PREFIX}_$oldDate")
-                editor.remove("${KEY_MOBILE_PREFIX}_$oldDate")
+            prefs.edit {
+                for (oldDate in toRemove) {
+                    remove("${KEY_WIFI_PREFIX}_$oldDate")
+                    remove("${KEY_MOBILE_PREFIX}_$oldDate")
+                }
+                putStringSet(KEY_HISTORY_DATES, toKeep)
             }
-            editor.putStringSet(KEY_HISTORY_DATES, toKeep)
-            editor.apply()
         }
     }
 
@@ -231,30 +231,30 @@ class DataUsageRepository(context: Context) {
         val today = cachedToday
         val currentDay = prefs.getString(KEY_CURRENT_DATE, "")
 
-        val editor = prefs.edit()
-        if (currentDay != today) {
-            if (!currentDay.isNullOrEmpty()) {
-                val pastDays = getHistoryDates().toMutableSet()
-                pastDays.add(currentDay)
-                if (pastDays.size > MAX_HISTORY_DAYS) {
-                    val sorted = pastDays.toList().sortedDescending()
-                    val toKeep = sorted.take(MAX_HISTORY_DAYS).toSet()
-                    val toRemove = sorted.drop(MAX_HISTORY_DAYS)
-                    for (oldDate in toRemove) {
-                        editor.remove("${KEY_WIFI_PREFIX}_$oldDate")
-                        editor.remove("${KEY_MOBILE_PREFIX}_$oldDate")
+        prefs.edit {
+            if (currentDay != today) {
+                if (!currentDay.isNullOrEmpty()) {
+                    val pastDays = getHistoryDates().toMutableSet()
+                    pastDays.add(currentDay)
+                    if (pastDays.size > MAX_HISTORY_DAYS) {
+                        val sorted = pastDays.toList().sortedDescending()
+                        val toKeep = sorted.take(MAX_HISTORY_DAYS).toSet()
+                        val toRemove = sorted.drop(MAX_HISTORY_DAYS)
+                        for (oldDate in toRemove) {
+                            remove("${KEY_WIFI_PREFIX}_$oldDate")
+                            remove("${KEY_MOBILE_PREFIX}_$oldDate")
+                        }
+                        putStringSet(KEY_HISTORY_DATES, toKeep)
+                    } else {
+                        putStringSet(KEY_HISTORY_DATES, pastDays)
                     }
-                    editor.putStringSet(KEY_HISTORY_DATES, toKeep)
-                } else {
-                    editor.putStringSet(KEY_HISTORY_DATES, pastDays)
                 }
+                putString(KEY_CURRENT_DATE, today)
             }
-            editor.putString(KEY_CURRENT_DATE, today)
-        }
 
-        editor.putLong("${KEY_WIFI_PREFIX}_$today", cachedWifi)
-        editor.putLong("${KEY_MOBILE_PREFIX}_$today", cachedMobile)
-        editor.apply()
+            putLong("${KEY_WIFI_PREFIX}_$today", cachedWifi)
+            putLong("${KEY_MOBILE_PREFIX}_$today", cachedMobile)
+        }
         lastFlushTime = now
     }
 
@@ -314,16 +314,16 @@ class DataUsageRepository(context: Context) {
         synchronized(lock) {
             val pastDays = getHistoryDates()
             val today = getTodayDate()
-            val editor = prefs.edit()
-            for (oldDate in pastDays) {
-                editor.remove("${KEY_WIFI_PREFIX}_$oldDate")
-                editor.remove("${KEY_MOBILE_PREFIX}_$oldDate")
+            prefs.edit {
+                for (oldDate in pastDays) {
+                    remove("${KEY_WIFI_PREFIX}_$oldDate")
+                    remove("${KEY_MOBILE_PREFIX}_$oldDate")
+                }
+                remove("${KEY_WIFI_PREFIX}_$today")
+                remove("${KEY_MOBILE_PREFIX}_$today")
+                remove(KEY_HISTORY_DATES)
+                remove(KEY_CURRENT_DATE)
             }
-            editor.remove("${KEY_WIFI_PREFIX}_$today")
-            editor.remove("${KEY_MOBILE_PREFIX}_$today")
-            editor.remove(KEY_HISTORY_DATES)
-            editor.remove(KEY_CURRENT_DATE)
-            editor.apply()
 
             cachedToday = today
             cachedWifi = 0L

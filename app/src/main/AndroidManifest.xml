@@ -2,16 +2,25 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <!-- Network access for speed test measurements (ping, download, upload) -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Network connectivity state monitoring for offline/online and interface detection -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Wi-Fi state access for reading link speed (Mbps) and signal metrics -->
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <!-- Location permissions required by Android OS to retrieve Wi-Fi SSID and cellular carrier name -->
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <!-- Foreground service permissions for ongoing real-time network speed monitoring in status bar -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- Notification permission required on Android 13+ (API 33+) to display live speed in notification bar -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Auto-start live speed monitoring service after device reboot if enabled in settings -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- Request battery optimization exemption so background monitoring service is not killed by OEM power managers -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- Keep CPU awake during active speed test executions to prevent connection throttling -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <application

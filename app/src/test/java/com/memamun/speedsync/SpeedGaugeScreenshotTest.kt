@@ -2,6 +2,7 @@ package com.memamun.speedsync
 
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onRoot
+import com.memamun.speedsync.ui.components.SpeedGauge
 import com.memamun.speedsync.ui.theme.MyApplicationTheme
 import com.github.takahirom.roborazzi.RobolectricDeviceQualifiers
 import com.github.takahirom.roborazzi.captureRoboImage
@@ -15,15 +16,15 @@ import org.robolectric.annotation.GraphicsMode
 @RunWith(RobolectricTestRunner::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 @Config(qualifiers = RobolectricDeviceQualifiers.Pixel8, sdk = [36])
-class GreetingScreenshotTest {
+class SpeedGaugeScreenshotTest {
 
   @get:Rule val composeTestRule = createComposeRule()
 
   @Test
-  fun greeting_screenshot() {
+  fun speedGauge_screenshot() {
     composeTestRule.setContent {
       MyApplicationTheme {
-        com.memamun.speedsync.ui.components.SpeedGauge(
+        SpeedGauge(
           speedValue = "142.8",
           speedUnitLabel = "Mbps Download",
           progressFraction = 0.65f
@@ -31,6 +32,6 @@ class GreetingScreenshotTest {
       }
     }
 
-    composeTestRule.onRoot().captureRoboImage(filePath = "src/test/screenshots/greeting.png")
+    composeTestRule.onRoot().captureRoboImage(filePath = "src/test/screenshots/speed_gauge.png")
   }
 }

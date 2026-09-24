@@ -211,6 +211,17 @@ class SpeedMeterService : Service() {
             try {
                 stopForeground(STOP_FOREGROUND_REMOVE)
             } catch (_: Exception) {}
+
+            val (todayWifi, todayMobile, todayTotal) = dataRepo.getTodayUsage()
+            _liveSpeedData.value = _liveSpeedData.value.copy(
+                downloadSpeedBytes = 0L,
+                uploadSpeedBytes = 0L,
+                totalSpeedBytes = 0L,
+                todayWifiBytes = todayWifi,
+                todayMobileBytes = todayMobile,
+                todayTotalBytes = todayTotal
+            )
+
             stopSelf()
         }
     }
@@ -766,12 +777,24 @@ class SpeedMeterService : Service() {
         private val _isServiceRunning = MutableStateFlow(false)
         val isServiceRunning: StateFlow<Boolean> = _isServiceRunning.asStateFlow()
 
+        fun resetLiveUsage() {
+            _liveSpeedData.value = _liveSpeedData.value.copy(
+                todayWifiBytes = 0L,
+                todayMobileBytes = 0L,
+                todayTotalBytes = 0L
+            )
+        }
+
         fun start(context: Context) {
             val intent = Intent(context, SpeedMeterService::class.java)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
+                } else {
+                    context.startService(intent)
+                }
+            } catch (_: Exception) {
+                // Ignore ForegroundServiceStartNotAllowedException if background restricted on API 31+
             }
         }
 

@@ -18,6 +18,7 @@ import com.memamun.speedsync.model.SpeedUnit
 import com.memamun.speedsync.model.ThemeMode
 import com.memamun.speedsync.network.SpeedTestEngine
 import com.memamun.speedsync.service.SpeedMeterService
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -80,15 +81,16 @@ class SpeedMeterViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun refreshHistory() {
-        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+        viewModelScope.launch(Dispatchers.IO) {
             val list = repository.getUsageHistory()
             _historyList.value = list
         }
     }
 
     fun clearHistory() {
-        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+        viewModelScope.launch(Dispatchers.IO) {
             repository.clearHistory()
+            SpeedMeterService.resetLiveUsage()
             val list = repository.getUsageHistory()
             _historyList.value = list
         }

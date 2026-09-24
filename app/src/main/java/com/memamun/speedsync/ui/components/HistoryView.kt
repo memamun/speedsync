@@ -285,7 +285,10 @@ fun HistoryView(
                         modifier = Modifier.fillMaxWidth(),
                         verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        items(historyList) { item ->
+                        items(
+                            items = historyList,
+                            key = { it.date }
+                        ) { item ->
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()

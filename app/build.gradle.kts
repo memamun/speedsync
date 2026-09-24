@@ -13,8 +13,8 @@ android {
     applicationId = "com.memamun.speedsync"
     minSdk = 24
     targetSdk = 36
-    versionCode = 8
-    versionName = "1.1.6"
+    versionCode = 9
+    versionName = "1.1.7"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
@@ -29,24 +29,20 @@ android {
     create("release") {
       val keystorePath = System.getenv("KEYSTORE_PATH")
         ?: (project.findProperty("KEYSTORE_PATH") as? String)
-        ?: "${rootDir}/speedsync-release-key.jks"
-      val releaseKeystore = file(keystorePath)
       val storePass = System.getenv("STORE_PASSWORD")
         ?: (project.findProperty("STORE_PASSWORD") as? String)
-        ?: "speedsync2026"
       val keyAliasName = System.getenv("KEY_ALIAS")
         ?: (project.findProperty("KEY_ALIAS") as? String)
-        ?: "speedsync"
       val keyPass = System.getenv("KEY_PASSWORD")
         ?: (project.findProperty("KEY_PASSWORD") as? String)
-        ?: "speedsync2026"
 
-      if (releaseKeystore.exists()) {
-        storeFile = releaseKeystore
+      if (keystorePath != null && storePass != null && keyAliasName != null && keyPass != null && file(keystorePath).exists()) {
+        storeFile = file(keystorePath)
         storePassword = storePass
         keyAlias = keyAliasName
         keyPassword = keyPass
       } else {
+        // Fall back to debug signing when release credentials are not provided via environment or Gradle properties
         storeFile = file("${rootDir}/debug.keystore")
         storePassword = "android"
         keyAlias = "androiddebugkey"
@@ -57,8 +53,8 @@ android {
 
   buildTypes {
     release {
-      isCrunchPngs = false
-      isMinifyEnabled = false
+      isCrunchPngs = true
+      isMinifyEnabled = true
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
       signingConfig = signingConfigs.getByName("release")
     }
