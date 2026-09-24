@@ -91,4 +91,16 @@ class SpeedMeterViewModelTest {
         advanceUntilIdle()
         assertEquals(1, viewModel.selectedTab.value)
     }
+
+    @Test
+    fun firstRunDialog_updatesAndCompletesCorrectly() {
+        viewModel.setShowFirstRunDialog(true)
+        assertTrue(viewModel.showFirstRunDialog.value)
+
+        viewModel.completeFirstRun()
+        assertFalse(viewModel.showFirstRunDialog.value)
+
+        viewModel.setShowFirstRunDialog(false)
+        assertFalse(viewModel.showFirstRunDialog.value)
+    }
 }

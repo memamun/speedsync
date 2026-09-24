@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import com.memamun.speedsync.model.SpeedUnit
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -122,5 +123,19 @@ class DataUsageRepositoryTest {
 
         val history = repo.getUsageHistory()
         assertTrue(history.any { it.wifiBytes == 5000L && it.mobileBytes == 10000L })
+    }
+
+    @Test
+    fun repository_firstRun_persistsAndUpdatesCorrectly() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val repo = DataUsageRepository(context)
+
+        // Given initial state or reset
+        repo.setFirstRunCompleted(false)
+        assertFalse(repo.isFirstRunCompleted())
+
+        // When completed
+        repo.setFirstRunCompleted(true)
+        assertTrue(repo.isFirstRunCompleted())
     }
 }

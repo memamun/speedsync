@@ -35,10 +35,12 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.core.net.toUri
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.memamun.speedsync.data.DataUsageRepository
 import com.memamun.speedsync.service.SpeedMeterService
 import com.memamun.speedsync.ui.SpeedMeterViewModel
+import com.memamun.speedsync.ui.components.FirstRunPermissionDialog
 import com.memamun.speedsync.ui.components.HistoryView
 import com.memamun.speedsync.ui.components.SettingsDialog
 import com.memamun.speedsync.ui.components.SpeedMeterBottomNav
@@ -80,6 +82,7 @@ fun SpeedMeterApp(viewModel: SpeedMeterViewModel) {
     val speedUnit by viewModel.speedUnit.collectAsStateWithLifecycle()
     val selectedTab by viewModel.selectedTab.collectAsStateWithLifecycle()
     val showSettingsDialog by viewModel.showSettingsDialog.collectAsStateWithLifecycle()
+    val showFirstRunDialog by viewModel.showFirstRunDialog.collectAsStateWithLifecycle()
     val isTesting by viewModel.isTesting.collectAsStateWithLifecycle()
     val isBatteryOptimizationIgnored by viewModel.isBatteryOptimizationIgnored.collectAsStateWithLifecycle()
     val themeMode by viewModel.themeMode.collectAsStateWithLifecycle()
@@ -106,25 +109,75 @@ fun SpeedMeterApp(viewModel: SpeedMeterViewModel) {
         )
     }
 
+    LifecycleResumeEffect(Unit) {
+        hasNotificationPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+        } else {
+            true
+        }
+        hasLocationPermission = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.ACCESS_FINE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+        viewModel.checkBatteryOptimization()
+        onPauseOrDispose {}
+    }
+
+    val requestBatteryOptimization: () -> Unit = {
+        try {
+            val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                data = "package:${context.packageName}".toUri()
+            }
+            context.startActivity(intent)
+        } catch (_: Exception) {
+            try {
+                val intent = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+                context.startActivity(intent)
+            } catch (_: Exception) {}
+        }
+    }
+
+    var isFirstRunRequest by remember { mutableStateOf(false) }
+
     val permissionsLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
     ) { perms ->
         val notifGranted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            perms[Manifest.permission.POST_NOTIFICATIONS] ?: hasNotificationPermission
+            perms[Manifest.permission.POST_NOTIFICATIONS] ?: (
+                ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.POST_NOTIFICATIONS
+                ) == PackageManager.PERMISSION_GRANTED
+            )
         } else {
             true
         }
         hasNotificationPermission = notifGranted
         hasLocationPermission = perms[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
-                perms[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+                perms[Manifest.permission.ACCESS_COARSE_LOCATION] == true ||
+                ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.ACCESS_FINE_LOCATION
+                ) == PackageManager.PERMISSION_GRANTED
+
+        if (isFirstRunRequest) {
+            isFirstRunRequest = false
+            if (!isBatteryOptimizationIgnored) {
+                requestBatteryOptimization()
+            }
+            viewModel.completeFirstRun()
+        }
+
         val repo = DataUsageRepository.getInstance(context)
         if (notifGranted && repo.isServiceEnabled()) {
             SpeedMeterService.start(context)
         }
     }
 
-    // Auto-start live status bar meter and request runtime permissions on launch
-    LaunchedEffect(Unit) {
+    val handleFirstRunGrant = {
         val permissionsToRequest = mutableListOf<String>()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !hasNotificationPermission) {
             permissionsToRequest.add(Manifest.permission.POST_NOTIFICATIONS)
@@ -133,13 +186,29 @@ fun SpeedMeterApp(viewModel: SpeedMeterViewModel) {
             permissionsToRequest.add(Manifest.permission.ACCESS_FINE_LOCATION)
             permissionsToRequest.add(Manifest.permission.ACCESS_COARSE_LOCATION)
         }
-        if (permissionsToRequest.isNotEmpty()) {
-            permissionsLauncher.launch(permissionsToRequest.toTypedArray())
-        }
 
-        val repo = DataUsageRepository.getInstance(context)
-        if (repo.isServiceEnabled() && hasNotificationPermission) {
-            SpeedMeterService.start(context)
+        if (permissionsToRequest.isNotEmpty()) {
+            isFirstRunRequest = true
+            permissionsLauncher.launch(permissionsToRequest.toTypedArray())
+        } else {
+            if (!isBatteryOptimizationIgnored) {
+                requestBatteryOptimization()
+            }
+            viewModel.completeFirstRun()
+            val repo = DataUsageRepository.getInstance(context)
+            if (hasNotificationPermission && repo.isServiceEnabled()) {
+                SpeedMeterService.start(context)
+            }
+        }
+    }
+
+    // Auto-start live status bar meter on launch when already configured
+    LaunchedEffect(showFirstRunDialog) {
+        if (!showFirstRunDialog) {
+            val repo = DataUsageRepository.getInstance(context)
+            if (repo.isServiceEnabled() && hasNotificationPermission) {
+                SpeedMeterService.start(context)
+            }
         }
     }
 
@@ -218,6 +287,22 @@ fun SpeedMeterApp(viewModel: SpeedMeterViewModel) {
         }
     }
 
+    if (showFirstRunDialog) {
+        FirstRunPermissionDialog(
+            hasNotificationPermission = hasNotificationPermission,
+            hasLocationPermission = hasLocationPermission,
+            isBatteryOptimizationIgnored = isBatteryOptimizationIgnored,
+            onGrantPermissions = handleFirstRunGrant,
+            onDismiss = {
+                viewModel.completeFirstRun()
+                val repo = DataUsageRepository.getInstance(context)
+                if (hasNotificationPermission && repo.isServiceEnabled()) {
+                    SpeedMeterService.start(context)
+                }
+            }
+        )
+    }
+
     if (showSettingsDialog) {
         SettingsDialog(
             isServiceRunning = isServiceRunning,
@@ -238,19 +323,7 @@ fun SpeedMeterApp(viewModel: SpeedMeterViewModel) {
                 }
             },
             onToggleStartOnBoot = { viewModel.toggleStartOnBoot(it) },
-            onRequestIgnoreBatteryOptimization = {
-                try {
-                    val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
-                        data = "package:${context.packageName}".toUri()
-                    }
-                    context.startActivity(intent)
-                } catch (e: Exception) {
-                    try {
-                        val intent = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
-                        context.startActivity(intent)
-                    } catch (_: Exception) {}
-                }
-            },
+            onRequestIgnoreBatteryOptimization = requestBatteryOptimization,
             onSelectUnit = { viewModel.setSpeedUnit(it) },
             onSelectThemeMode = { viewModel.setThemeMode(it) },
             onDismiss = { viewModel.setShowSettingsDialog(false) }

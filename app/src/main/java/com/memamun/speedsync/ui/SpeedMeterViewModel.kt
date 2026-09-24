@@ -52,6 +52,9 @@ class SpeedMeterViewModel(application: Application) : AndroidViewModel(applicati
     private val _showSettingsDialog = MutableStateFlow(false)
     val showSettingsDialog: StateFlow<Boolean> = _showSettingsDialog.asStateFlow()
 
+    private val _showFirstRunDialog = MutableStateFlow(!repository.isFirstRunCompleted())
+    val showFirstRunDialog: StateFlow<Boolean> = _showFirstRunDialog.asStateFlow()
+
     private val _isTesting = MutableStateFlow(false)
     val isTesting: StateFlow<Boolean> = _isTesting.asStateFlow()
 
@@ -78,6 +81,15 @@ class SpeedMeterViewModel(application: Application) : AndroidViewModel(applicati
 
     fun setShowSettingsDialog(show: Boolean) {
         _showSettingsDialog.value = show
+    }
+
+    fun setShowFirstRunDialog(show: Boolean) {
+        _showFirstRunDialog.value = show
+    }
+
+    fun completeFirstRun() {
+        repository.setFirstRunCompleted(true)
+        _showFirstRunDialog.value = false
     }
 
     fun refreshHistory() {

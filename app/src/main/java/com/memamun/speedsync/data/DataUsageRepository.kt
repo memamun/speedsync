@@ -149,6 +149,12 @@ class DataUsageRepository(context: Context) {
         prefs.edit { putBoolean(KEY_START_ON_BOOT, enabled) }
     }
 
+    fun isFirstRunCompleted(): Boolean = prefs.getBoolean(KEY_FIRST_RUN_COMPLETED, false)
+
+    fun setFirstRunCompleted(completed: Boolean) {
+        prefs.edit { putBoolean(KEY_FIRST_RUN_COMPLETED, completed) }
+    }
+
     fun getSpeedUnit(): SpeedUnit {
         val name = prefs.getString(KEY_SPEED_UNIT, SpeedUnit.AUTO.name) ?: SpeedUnit.AUTO.name
         return try {
@@ -344,6 +350,7 @@ class DataUsageRepository(context: Context) {
 
         private const val KEY_SERVICE_ENABLED = "key_service_enabled"
         private const val KEY_START_ON_BOOT = "key_start_on_boot"
+        private const val KEY_FIRST_RUN_COMPLETED = "key_first_run_completed"
         private const val KEY_SPEED_UNIT = "key_speed_unit"
         private const val KEY_THEME_MODE = "key_theme_mode"
         private const val KEY_CURRENT_DATE = "key_current_date"
